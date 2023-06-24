@@ -1,13 +1,14 @@
 use anyhow::{Result, Context};
 use curl::easy::Easy;
 use serde_json::Value;
+use serde::Deserialize;
+
 
 use statrs::statistics::Statistics;
-use std::error::Error;
 use std::str;
 
 use config::{Config, File, FileFormat};
-use std::collections::HashMap;
+use config::ConfigError;
 
 struct StockData {
     symbol: String,
@@ -17,17 +18,29 @@ struct StockData {
     mean_value: f64,
 }
 
-fn grab_client_config() -> Result<(Config, config::ConfigError)> {
+#[derive(Debug, Deserialize)]
+struct ClientConfig {
+    api_key: String,
+    symbols: Vec<String>,
+}
+
+
+fn grab_client_config() -> Result<ClientConfig, ConfigError> {
     let mut configuration = Config::default();
-    configuration.merge(File::new("config", FileFormat::Toml))?;
-    Ok(configuration)
+    let mut configuration = Config::builder().add_source(File::new("config.toml", FileFormat::Toml)).build()?;
+    let client_config: ClientConfig = ClientConfig {
+        api_key: configuration.get::<String>("api_key")?,
+        symbols: configuration.get::<Vec<String>>("symbols")?,
+    };
+    Ok(client_config)
 }
 
 fn handle_client_internal_interface() -> Result<(Vec<StockData>, Vec<StockData>)> {
-    let config = grab_client_config().context("unable to load client config")?;
-    let api_key: &str = config.get("api_key").as_str().context("unable to get api key from config")?;
-    let symbols: Vec<String> = config.get("symbols").context("unable to get stock symbols from config")?;
-    Ok(fetch_stock_symbols_data(symbols, api_key))
+    let client_config = grab_client_config().context("unable to load client config")?;
+    let api_key = &client_config.api_key;
+    let symbols = &client_config.symbols;
+    let symbols_str: Vec<&str> = client_config.symbols.iter().map(AsRef::as_ref).collect();
+    fetch_stock_symbols_data(&symbols_str, &api_key)
 }
 
 fn fetch_stock_symbols_data(
@@ -118,7 +131,7 @@ fn calculate_close_differences(
     })
 }
 //TODO brain dead to this logic atm
-fn find_most_performant(stock_30: Vec<StockData>, stock_all: Vec<StockData>) {
+fn find_most_performant(stock_30: Vec<StockData>, stock_all: Vec<StockData>) -> Result<()> {
     let most_performant_30 = stock_30
         .iter()
         .max_by(|a, b| {
@@ -128,18 +141,21 @@ fn find_most_performant(stock_30: Vec<StockData>, stock_all: Vec<StockData>) {
                 .partial_cmp(&adjusted_performance_b)
                 .unwrap()
         })
-        .unwrap();
+        .context("unable to calculate most performant stock (30)")?;
 
     let most_performant_all = stock_all
         .iter()
         .max_by(|a, b| {
             let adjusted_performance_a = a.mean_return / a.mean_value;
             let adjusted_performance_b = b.mean_return / b.mean_value;
-            adjusted_performance_a
-                .partial_cmp(&adjusted_performance_b)
-                .unwrap()
+            match (adjusted_performance_a.is_nan(), adjusted_performance_b.is_nan()) {
+                (true, true) => std::cmp::Ordering::Equal,
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                (false, false) => adjusted_performance_a.partial_cmp(&adjusted_performance_b).unwrap_or(std::cmp::Ordering::Equal),
+            }
         })
-        .unwrap();
+        .context("unable to calculate most performant stock (all)")?;
 
     println!("A higher performance score is better");
     println!("");
@@ -156,11 +172,35 @@ fn find_most_performant(stock_30: Vec<StockData>, stock_all: Vec<StockData>) {
         "Performance Score: {}",
         most_performant_all.mean_return / most_performant_all.mean_value
     );
+    Ok(())
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
-    let symbols = vec!["IBM", "AAPL", "GOOGL"];
-    let api_key = "demo";
+fn validate_api_key(api_key: &str) -> Result<bool> {
+    let url = format!(
+        "https://www.alphavantage.co/query?function=TIME_SERIES_INTRADAY&symbol=IBM&interval=5min&apikey={}",
+        api_key
+    );
+    let mut easy = Easy::new();
+    easy.url(&url)?;
+    let mut response_body = Vec::new();
+    {
+        let mut transfer = easy.transfer();
+        transfer.write_function(|new_data| {
+            response_body.extend_from_slice(new_data);
+            Ok(new_data.len())
+        })?;
+        transfer.perform()?;
+    }
+
+    let response_str = std::str::from_utf8(&response_body)?;
+    Ok(!response_str.contains("\"Note\""))
+}
+
+fn main() -> Result<()> {
+    let api_validation = validate_api_key("81I9AVPLTTFBVASS")?;
+    if api_validation == true {
+        println!("api key validated");
+    }
     let (stock_data_all, stock_data_30) = handle_client_internal_interface()?;
     for stock in &stock_data_30 {
         println!("Stock Symbol: {}", stock.symbol);
