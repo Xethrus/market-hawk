@@ -85,7 +85,7 @@ fn calculate_close_differences(closing_prices: Vec<f64>, symbol: &str) -> Result
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let symbols = vec!["IBM"];
+    let symbols = vec!["IBM", "AAPL", "GOOGL"];
     let api_key = "81I9AVPLTTFBVASS";
     let (stock_data_all, stock_data_30) = fetch_stock_symbols_data(&symbols, api_key)?;
     for stock in stock_data_30 {
