@@ -26,11 +26,11 @@ struct ClientConfig {
 
 
 fn grab_client_config() -> Result<ClientConfig, ConfigError> {
-    let mut configuration = Config::default();
-    let mut configuration = Config::builder().add_source(File::new("config.toml", FileFormat::Toml)).build()?;
+    let configuration = Config::default();
+    let configuration = Config::builder().add_source(File::new("config.toml", FileFormat::Toml)).build()?;
     let client_config: ClientConfig = ClientConfig {
-        api_key: configuration.get::<String>("api_key")?,
-        symbols: configuration.get::<Vec<String>>("symbols")?,
+        api_key: configuration.get::<String>("configuration.api_key")?,
+        symbols: configuration.get::<Vec<String>>("configuration.symbols")?,
     };
     Ok(client_config)
 }
@@ -53,7 +53,7 @@ fn fetch_stock_symbols_data(
         let mut easy = Easy::new();
         let mut request_data = Vec::new();
         let url = format!(
-            "https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={}&apikey={}",
+            "https://www.alphavantage.co/query?function=TIME_SERIES_DAILY_ADJUSTED&symbol={}&apikey={}",
             symbol, api_key
         );
         easy.url(&url)?;
@@ -67,6 +67,7 @@ fn fetch_stock_symbols_data(
         }
         let response_body = str::from_utf8(&request_data).context("unable to convert request data from utf8")?;
         let data: Value = serde_json::from_str(&response_body).context("unable to extract json from response body")?;
+        //println!("{:#?}", data); Top teir debug print
         let timeseries = data["Time Series (Daily)"].as_object().context("unable to extract timeseries from json")?;
 
         let mut closing_prices_all = Vec::new();
@@ -197,10 +198,11 @@ fn validate_api_key(api_key: &str) -> Result<bool> {
 }
 
 fn main() -> Result<()> {
-    let api_validation = validate_api_key("81I9AVPLTTFBVASS")?;
-    if api_validation == true {
-        println!("api key validated");
-    }
+    //api validation test code
+//    let api_validation = validate_api_key("81I9AVPLTTFBVASS")?;
+//    if api_validation == true {
+//        println!("api key validated");
+//    }
     let (stock_data_all, stock_data_30) = handle_client_internal_interface()?;
     for stock in &stock_data_30 {
         println!("Stock Symbol: {}", stock.symbol);
@@ -224,6 +226,6 @@ fn main() -> Result<()> {
         println!("Mean value (last 100 days): {}", stock.mean_value);
         println!();
     }
-    find_most_performant(stock_data_30, stock_data_all);
+    find_most_performant(stock_data_30, stock_data_all)?;
     Ok(())
 }
