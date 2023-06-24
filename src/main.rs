@@ -67,15 +67,20 @@ fn fetch_stock_symbols_data(
         }
         let response_body = str::from_utf8(&request_data).context("unable to convert request data from utf8")?;
         let data: Value = serde_json::from_str(&response_body).context("unable to extract json from response body")?;
-        //println!("{:#?}", data); Top teir debug print
-        let timeseries = data["Time Series (Daily)"].as_object().context("unable to extract timeseries from json")?;
-
         let mut closing_prices_all = Vec::new();
+        let timeseries = match data["Time Series (Daily)"].as_object() {
+            Some(timeseries) => {
+                for (_date, values) in timeseries {
+                    let close = values["4. close"].as_str().unwrap().parse::<f64>().context("unable to grab close value from timeseries")?;
+                    closing_prices_all.push(close);
+                }
+            },
+            None => {
+                println!("{:#?}", data); // TODO Top tier debug print
+            }
+        };
 
-        for (_date, values) in timeseries {
-            let close = values["4. close"].as_str().unwrap().parse::<f64>().context("unable to grab close value from timeseries")?;
-            closing_prices_all.push(close);
-        }
+
 
         let mut closing_prices_30 = closing_prices_all.clone();
         closing_prices_30.reverse(); // reverse the vector to start from the most recent date

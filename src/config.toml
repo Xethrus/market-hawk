@@ -1,4 +1,4 @@
 [configuration]
 api_key = "81I9AVPLTTFBVASS"
-symbols = ["IBM"]
+symbols = ["IBM","AAPL","GOOGL"]
 
