@@ -1,9 +1,13 @@
-use anyhow::{Context, Result};
+use anyhow::{Result, Context};
 use curl::easy::Easy;
 use serde_json::Value;
+
 use statrs::statistics::Statistics;
 use std::error::Error;
 use std::str;
+
+use config::{Config, File, FileFormat};
+use std::collections::HashMap;
 
 struct StockData {
     symbol: String,
@@ -13,10 +17,23 @@ struct StockData {
     mean_value: f64,
 }
 
+fn grab_client_config() -> Result<(Config, config::ConfigError)> {
+    let mut configuration = Config::default();
+    configuration.merge(File::new("config", FileFormat::Toml))?;
+    Ok(configuration)
+}
+
+fn handle_client_internal_interface() -> Result<(Vec<StockData>, Vec<StockData>)> {
+    let config = grab_client_config().context("unable to load client config")?;
+    let api_key: &str = config.get("api_key").as_str().context("unable to get api key from config")?;
+    let symbols: Vec<String> = config.get("symbols").context("unable to get stock symbols from config")?;
+    Ok(fetch_stock_symbols_data(symbols, api_key))
+}
+
 fn fetch_stock_symbols_data(
     symbols: &[&str],
     api_key: &str,
-) -> Result<(Vec<StockData>, Vec<StockData>), Box<dyn std::error::Error>> {
+) -> Result<(Vec<StockData>, Vec<StockData>)> {
     let mut stock_data_all_group = Vec::new();
     let mut stock_data_30_group = Vec::new();
     for symbol in symbols {
@@ -35,19 +52,18 @@ fn fetch_stock_symbols_data(
             })?;
             transfer.perform()?;
         }
-        let response_body = str::from_utf8(&request_data).unwrap();
-        let data: Value = serde_json::from_str(&response_body).unwrap();
-        let timeseries = data["Time Series (Daily)"].as_object().unwrap();
+        let response_body = str::from_utf8(&request_data).context("unable to convert request data from utf8")?;
+        let data: Value = serde_json::from_str(&response_body).context("unable to extract json from response body")?;
+        let timeseries = data["Time Series (Daily)"].as_object().context("unable to extract timeseries from json")?;
 
         let mut closing_prices_all = Vec::new();
-        let mut closing_prices_30 = Vec::new();
 
         for (_date, values) in timeseries {
-            let close = values["4. close"].as_str().unwrap().parse::<f64>().unwrap();
+            let close = values["4. close"].as_str().unwrap().parse::<f64>().context("unable to grab close value from timeseries")?;
             closing_prices_all.push(close);
         }
 
-        closing_prices_30 = closing_prices_all.clone();
+        let mut closing_prices_30 = closing_prices_all.clone();
         closing_prices_30.reverse(); // reverse the vector to start from the most recent date
         closing_prices_30.truncate(30); // limit the entries to the last 30 days
 
@@ -78,7 +94,7 @@ fn fetch_stock_symbols_data(
 fn calculate_close_differences(
     closing_prices: Vec<f64>,
     symbol: &str,
-) -> Result<StockData, Box<dyn Error>> {
+) -> Result<StockData> {
     let mut returns: Vec<f64> = Vec::new();
     let mut total_quantity: f64 = 0.0;
     for i in 0..closing_prices.len() - 1 {
@@ -144,8 +160,8 @@ fn find_most_performant(stock_30: Vec<StockData>, stock_all: Vec<StockData>) {
 
 fn main() -> Result<(), Box<dyn Error>> {
     let symbols = vec!["IBM", "AAPL", "GOOGL"];
-    let api_key = "81I9AVPLTTFBVASS";
-    let (stock_data_all, stock_data_30) = fetch_stock_symbols_data(&symbols, api_key)?;
+    let api_key = "demo";
+    let (stock_data_all, stock_data_30) = handle_client_internal_interface()?;
     for stock in &stock_data_30 {
         println!("Stock Symbol: {}", stock.symbol);
         println!("Mean value return (last 30 days): {}", stock.mean_return);
