@@ -16,7 +16,7 @@ struct StockData {
     variance: f64,
     standard_deviation: f64,
     mean_value: f64,
-    time_period: f64,
+    time_period: i16,
     daily_states: Vec<DailyStockData>,
 }
 
@@ -36,18 +36,19 @@ struct FlatMetrics {
 struct ClientConfig {
     api_key: String,
     symbols: Vec<String>,
+    time_period: i16,
 }
 
 impl StockData {
-    fn update(&mut self) {
-        *self = self.harvest_stock_metrics(self.time_period, get_stock_symbol_data);
+    fn update(&mut self, api_key: &str) -> Result<()> {
+        Ok(*self = harvest_stock_metrics(self.time_period, get_stock_symbol_data(&self.symbol, api_key)?, self.symbol.as_str())?)
     }
 }
 
 
 
 
-fn get_stock_symbol_data(symbol: &str, api_key: &str) -> Result<String> {
+fn get_stock_symbol_data(symbol: &str, api_key: &str) -> Result<serde_json::Value> {
     //TODO idk it depends on what serde json is returning for the return type here
     let mut easy = Easy::new();
     let mut request_data = Vec::new();
@@ -69,23 +70,23 @@ fn get_stock_symbol_data(symbol: &str, api_key: &str) -> Result<String> {
     Ok(data)
 }
 
-fn harvest_stock_metrics(time_period: i16, symbol_data: String) -> Result<StockData> {
+fn harvest_stock_metrics(time_period: i16, symbol_data: serde_json::Value, symbol: &str) -> Result<StockData> {
     let mut closing_prices = Vec::new();
     let timeseries = match symbol_data["Time Series (Daily)"].as_object() {
         Some(timeseries) => {
             //TODO fix error handling
             //TODO into iter might not work here but need to find a way to limit the for loop
-            for (_date, values) in timeseries.into_iter().take(time_period) {
+            for (_date, values) in timeseries.into_iter().take(time_period.try_into().unwrap()) {
                     let close = values["4. close"].as_str().unwrap().parse::<f64>().context("unable to grab close value from timeseries")?;
                     closing_prices.push(close);
             }
         },
         None => {
-                println!("{:#?}", data); // TODO Top tier debug print
+                println!("{:#?}", symbol_data); // TODO Top tier debug print
         }
     };
-
-    let stock_data = calculate_close_differences(closing_prices, symbol)?;
+//TODO
+    let stock_data = generate_stock_metrics(closing_prices, symbol)?;
 
     let stock = StockData {
         symbol: symbol.to_string(),
@@ -99,12 +100,12 @@ fn harvest_stock_metrics(time_period: i16, symbol_data: String) -> Result<StockD
     Ok(stock)
 }
 
-#[allow(dead_code)]
+//#[allow(dead_code)]
 fn compile_stock_data(client_requested_symbols: Vec<&str>, api_key: &str, time_period: i16) -> Result<Vec<StockData>>{
     //TODO presentable output of all data === MIGHT NEED & ref for symbols and api key
-    let mut compiled_data = new::Vec(); 
-    for symbol in symbols {
-        compiled_data.push(harvest_stock_metrics(time_period, get_stock_symbol_data(symbol, api_key)));
+    let mut compiled_data = Vec::new(); 
+    for symbol in client_requested_symbols {
+        compiled_data.push(harvest_stock_metrics(time_period, get_stock_symbol_data(symbol, api_key)?, symbol)?);
     }
     Ok(compiled_data)
 }
@@ -116,16 +117,18 @@ fn grab_client_config() -> Result<ClientConfig, ConfigError> {
     let client_config: ClientConfig = ClientConfig {
         api_key: configuration.get::<String>("configuration.api_key")?,
         symbols: configuration.get::<Vec<String>>("configuration.symbols")?,
+        time_period: configuration.get::<i16>("configuration.time_period")?,
     };
     Ok(client_config)
 }
 
-fn handle_client_internal_interface() -> Result<(Vec<StockData>, Vec<StockData>)> {
+fn handle_client_internal_interface() -> Result<(Vec<StockData>)> {
     let client_config = grab_client_config().context("unable to load client config")?;
     let api_key = &client_config.api_key;
     let symbols = &client_config.symbols;
+    let time_period = &client_config.time_period;
     let symbols_str: Vec<&str> = client_config.symbols.iter().map(AsRef::as_ref).collect();
-    compile_stock_data(&symbols_str, &api_key)
+    Ok(compile_stock_data(symbols_str, &api_key, *time_period)?)
 }
 
 fn generate_stock_metrics(
@@ -155,7 +158,7 @@ fn generate_stock_metrics(
     //double checking TODO LOOKS GOOD
     //    println!("Number of closing prices: {}", closing_prices.len());
     let mean_value = total_quantity / closing_prices.len() as f64;
-    let time_period = closing_prices.len() as f64;
+    let time_period = closing_prices.len() as i16;
     //TODO weird layered logic here StockData -> StockData
     Ok(StockData {
         symbol: symbol.to_string(),
@@ -170,19 +173,8 @@ fn generate_stock_metrics(
 //TODO brain dead to this logic atm
 //
 
-fn find_most_performant(stock_30: Vec<StockData>, stock_all: Vec<StockData>) -> Result<()> {
-    let most_performant_30 = stock_30
-        .iter()
-        .max_by(|a, b| {
-            let adjusted_performance_a = a.mean_return / a.mean_value;
-            let adjusted_performance_b = b.mean_return / b.mean_value;
-            adjusted_performance_a
-                .partial_cmp(&adjusted_performance_b)
-                .unwrap()
-        })
-        .context("unable to calculate most performant stock (30)")?;
-
-    let most_performant_all = stock_all
+fn find_most_performant(stock: Vec<StockData>) -> Result<()> {
+    let most_performant = stock
         .iter()
         .max_by(|a, b| {
             let adjusted_performance_a = a.mean_return / a.mean_value;
@@ -198,18 +190,11 @@ fn find_most_performant(stock_30: Vec<StockData>, stock_all: Vec<StockData>) -> 
 
     println!("A higher performance score is better");
     println!("");
-    println!("Most performant stock in the last 30 days...");
-    println!("Stock Symbol: {}", most_performant_30.symbol);
+    println!("Most performant stock in the last {} days...", most_performant.time_period);
+    println!("Stock Symbol: {}", most_performant.symbol);
     println!(
         "Performance Score: {}",
-        most_performant_30.mean_return / most_performant_30.mean_value
-    );
-    println!();
-    println!("Most performant stock historically...");
-    println!("Stock Symbol: {}", most_performant_all.symbol);
-    println!(
-        "Performance Score: {}",
-        most_performant_all.mean_return / most_performant_all.mean_value
+        most_performant.mean_return / most_performant.mean_value
     );
     Ok(())
 }
@@ -241,29 +226,17 @@ fn main() -> Result<()> {
 //    if api_validation == true {
 //        println!("api key validated");
 //    }
-    let (stock_data_all, stock_data_30) = handle_client_internal_interface()?;
-    for stock in &stock_data_30 {
+    let stock_data = handle_client_internal_interface()?;
+    for stock in &stock_data {
         println!("Stock Symbol: {}", stock.symbol);
-        println!("Mean value return (last 30 days): {}", stock.mean_return);
-        println!("Variance of value (last 30 days): {}", stock.variance);
+        println!("Mean value return (last {} days): {}", stock.time_period,stock.mean_return);
+        println!("Variance of value (last {} days): {}", stock.time_period,stock.variance);
         println!(
-            "Standard deviation of value (last 30 days): {}",
-            stock.standard_deviation
-        );
-        println!("Mean value (last 30 days): {}", stock.mean_value);
+            "Standard deviation of value (last {} days): {}",
+            stock.time_period, stock.standard_deviation);
+        println!("Mean value (last {} days): {}", stock.time_period, stock.mean_value);
         println!();
     }
-    for stock in &stock_data_all {
-        println!("Stock Symbol: {}", stock.symbol);
-        println!("Mean value return (last 100 days): {}", stock.mean_return);
-        println!("Variance of value (last 100 days): {}", stock.variance);
-        println!(
-            "Standard deviation of value (last 100 days): {}",
-            stock.standard_deviation
-        );
-        println!("Mean value (last 100 days): {}", stock.mean_value);
-        println!();
-    }
-    find_most_performant(stock_data_30, stock_data_all)?;
+    find_most_performant(stock_data)?;
     Ok(())
 }
