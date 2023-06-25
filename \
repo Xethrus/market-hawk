@@ -20,53 +20,40 @@ struct StockData {
     daily_states: Vec<DailyStockData>,
 }
 
-struct DailyStockData {
-    price: f64,
-    change_in_value: f64,
-}
-
-struct FlatMetrics {
-    mean_return: f64,
-    standard_deviation: f64,
-    mean_value: f64,
-    time_period: f64,
-}
-
-#[derive(Debug, Deserialize)]
-struct ClientConfig {
-    api_key: String,
-    symbols: Vec<String>,
-}
-
 impl StockData {
-    fn update(&mut self) {
-        *self = self.harvest_stock_metrics(self.time_period, get_stock_symbol_data);
+    fn construct_StockData(
+        symbols: &[&str],
+        api_key: &str,
+        time_period: i16,
+    ) -> StockData
+    {
+        let mut stocks_metrics = Vec::new();
+
+
     }
 }
-
-
-
 
 fn get_stock_symbol_data(symbol: &str, api_key: &str) -> Result<String> {
     //TODO idk it depends on what serde json is returning for the return type here
-    let mut easy = Easy::new();
-    let mut request_data = Vec::new();
-    let url = format!(
-        "https://www.alphavantage.co/query?function=TIME_SERIES_DAILY_ADJUSTED&symbol={}&apikey={}",
-        symbol, api_key
-    );
-    easy.url(&url)?;
-    {
-        let mut transfer = easy.transfer();
-        transfer.write_function(|new_data| {
-            request_data.extend_from_slice(new_data);
-            Ok(new_data.len())
-        })?;
-        transfer.perform()?;
-    }
-    let response_body = str::from_utf8(&request_data).context("unable to convert request data from utf8")?;
-    let data: Value = serde_json::from_str(&response_body).context("unable to extract json from response body")?;
-    Ok(data)
+    for symbol in symbols {
+        let mut easy = Easy::new();
+        let mut request_data = Vec::new();
+        let url = format!(
+            "https://www.alphavantage.co/query?function=TIME_SERIES_DAILY_ADJUSTED&symbol={}&apikey={}",
+            symbol, api_key
+        );
+        easy.url(&url)?;
+        {
+            let mut transfer = easy.transfer();
+            transfer.write_function(|new_data| {
+                request_data.extend_from_slice(new_data);
+                Ok(new_data.len())
+            })?;
+            transfer.perform()?;
+        }
+        let response_body = str::from_utf8(&request_data).context("unable to convert request data from utf8")?;
+        let data: Value = serde_json::from_str(&response_body).context("unable to extract json from response body")?;
+        Ok(data)
 }
 
 fn harvest_stock_metrics(time_period: i16, symbol_data: String) -> Result<StockData> {
@@ -100,13 +87,28 @@ fn harvest_stock_metrics(time_period: i16, symbol_data: String) -> Result<StockD
 }
 
 #[allow(dead_code)]
-fn compile_stock_data(client_requested_symbols: Vec<&str>, api_key: &str, time_period: i16) -> Result<Vec<StockData>>{
-    //TODO presentable output of all data === MIGHT NEED & ref for symbols and api key
-    let mut compiled_data = new::Vec(); 
-    for symbol in symbols {
-        compiled_data.push(harvest_stock_metrics(time_period, get_stock_symbol_data(symbol, api_key)));
-    }
-    Ok(compiled_data)
+fn construct_client_output() {
+    //TODO presentable output of all data
+}
+
+struct DailyStockData {
+    price: f64,
+    change_in_value: f64,
+}
+
+struct FlatMetrics {
+    mean_return: f64,
+    standard_deviation: f64,
+    mean_value: f64,
+    time_period: f64,
+}
+
+
+
+#[derive(Debug, Deserialize)]
+struct ClientConfig {
+    api_key: String,
+    symbols: Vec<String>,
 }
 
 
@@ -125,7 +127,78 @@ fn handle_client_internal_interface() -> Result<(Vec<StockData>, Vec<StockData>)
     let api_key = &client_config.api_key;
     let symbols = &client_config.symbols;
     let symbols_str: Vec<&str> = client_config.symbols.iter().map(AsRef::as_ref).collect();
-    compile_stock_data(&symbols_str, &api_key)
+    fetch_stock_symbols_data(&symbols_str, &api_key)
+}
+
+fn fetch_stock_symbols_data(
+    symbols: &[&str],
+    api_key: &str,
+) -> Result<(Vec<StockData>, Vec<StockData>)> {
+    let mut stock_data_all_group = Vec::new();
+    let mut stock_data_30_group = Vec::new();
+    for symbol in symbols {
+        let mut easy = Easy::new();
+        let mut request_data = Vec::new();
+        let url = format!(
+            "https://www.alphavantage.co/query?function=TIME_SERIES_DAILY_ADJUSTED&symbol={}&apikey={}",
+            symbol, api_key
+        );
+        easy.url(&url)?;
+        {
+            let mut transfer = easy.transfer();
+            transfer.write_function(|new_data| {
+                request_data.extend_from_slice(new_data);
+                Ok(new_data.len())
+            })?;
+            transfer.perform()?;
+        }
+        let response_body = str::from_utf8(&request_data).context("unable to convert request data from utf8")?;
+        let data: Value = serde_json::from_str(&response_body).context("unable to extract json from response body")?;
+        let mut closing_prices_all = Vec::new();
+        let timeseries = match data["Time Series (Daily)"].as_object() {
+            Some(timeseries) => {
+                for (_date, values) in timeseries {
+                    let close = values["4. close"].as_str().unwrap().parse::<f64>().context("unable to grab close value from timeseries")?;
+                    closing_prices_all.push(close);
+                }
+            },
+            None => {
+                println!("{:#?}", data); // TODO Top tier debug print
+            }
+        };
+
+
+
+        let mut closing_prices_30 = closing_prices_all.clone();
+        closing_prices_30.reverse(); // reverse the vector to start from the most recent date
+        closing_prices_30.truncate(30); // limit the entries to the last 30 days
+
+        let stock_data_all = calculate_close_differences(closing_prices_all, symbol)?;
+        let stock_data_30 = calculate_close_differences(closing_prices_30, symbol)?;
+
+        let stock_all = StockData {
+            symbol: symbol.to_string(),
+            mean_return: stock_data_all.mean_return,
+            variance: stock_data_all.variance,
+            standard_deviation: stock_data_all.standard_deviation,
+            mean_value: stock_data_all.mean_value,
+            time_period: stock_data_all.time_period,
+            daily_states: stock_data_all.daily_states,
+        };
+        stock_data_all_group.push(stock_all);
+
+        let stock_30 = StockData {
+            symbol: symbol.to_string(),
+            mean_return: stock_data_30.mean_return,
+            variance: stock_data_30.variance,
+            standard_deviation: stock_data_30.standard_deviation,
+            mean_value: stock_data_30.mean_value,
+            time_period: stock_data_30.time_period,
+            daily_states: stock_data_30.daily_states,
+        };
+        stock_data_30_group.push(stock_30);
+    }
+    Ok((stock_data_all_group, stock_data_30_group))
 }
 
 fn generate_stock_metrics(
@@ -156,7 +229,6 @@ fn generate_stock_metrics(
     //    println!("Number of closing prices: {}", closing_prices.len());
     let mean_value = total_quantity / closing_prices.len() as f64;
     let time_period = closing_prices.len() as f64;
-    //TODO weird layered logic here StockData -> StockData
     Ok(StockData {
         symbol: symbol.to_string(),
         mean_return,
