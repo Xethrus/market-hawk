@@ -16,6 +16,13 @@ struct StockData {
     variance: f64,
     standard_deviation: f64,
     mean_value: f64,
+    time_period: f64,
+    daily_states: Vec<DailyStockData>,
+}
+
+struct DailyStockData {
+    price: f64,
+    change_in_value: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,8 +123,18 @@ fn calculate_close_differences(
 ) -> Result<StockData> {
     let mut returns: Vec<f64> = Vec::new();
     let mut total_quantity: f64 = 0.0;
+
+    let mut daily_stocks: Vec<DailyStockData> = Vec::new();
+
     for i in 0..closing_prices.len() - 1 {
-        let daily_return = (closing_prices[i + 1] - closing_prices[i]) / closing_prices[i];
+        let change_in_value = closing_prices[i+1] - closing_prices[i];
+        let daily_return = change_in_value / closing_prices[i];
+        let daily_stock_data = DailyStockData {
+            price: closing_prices[i],
+            change_in_value: change_in_value,
+        }
+        daily_stocks.push(daily_stock_data);
+
         total_quantity += closing_prices[i];
         returns.push(daily_return);
     }
@@ -134,6 +151,8 @@ fn calculate_close_differences(
         variance,
         standard_deviation,
         mean_value,
+        closing_prices.len() as f64,
+        daily_stocks,
     })
 }
 //TODO brain dead to this logic atm
