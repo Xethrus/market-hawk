@@ -12,24 +12,23 @@ use config::ConfigError;
 
 struct StockData {
     symbol: String,
-    mean_return: f64,
-    variance: f64,
-    standard_deviation: f64,
-    mean_value: f64,
+    basic_metrics: BasicMetrics,
     time_period: i16,
     daily_states: Vec<DailyStockData>,
 }
 
 struct DailyStockData {
-    price: f64,
+    closing_price: f64,
+    volume: f64,
     change_in_value: f64,
 }
 
-struct FlatMetrics {
+struct BasicMetrics {
     mean_return: f64,
-    standard_deviation: f64,
     mean_value: f64,
-    time_period: f64,
+    mean_volume: f64,
+    variance: f64,
+    standard_deviation: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -46,10 +45,7 @@ impl StockData {
 }
 
 
-
-
 fn get_stock_symbol_data(symbol: &str, api_key: &str) -> Result<serde_json::Value> {
-    //TODO idk it depends on what serde json is returning for the return type here
     let mut easy = Easy::new();
     let mut request_data = Vec::new();
     let url = format!(
@@ -69,16 +65,23 @@ fn get_stock_symbol_data(symbol: &str, api_key: &str) -> Result<serde_json::Valu
     let data: Value = serde_json::from_str(&response_body).context("unable to extract json from response body")?;
     Ok(data)
 }
-
+/*
+ * Harvest_stock_metrics breakdown
+ * TODO
+ * (1) cleanse incoming data and handle a error well, fn process_symbol_data
+ * (2) gather stock_data (is this useful?!!?!) Not sure on this one. maybe just use the
+ * generate_stock_metrics function?
+ */
 fn harvest_stock_metrics(time_period: i16, symbol_data: serde_json::Value, symbol: &str) -> Result<StockData> {
     let mut closing_prices = Vec::new();
+    let mut volumes = Vec::new();
     let timeseries = match symbol_data["Time Series (Daily)"].as_object() {
         Some(timeseries) => {
-            //TODO fix error handling
-            //TODO into iter might not work here but need to find a way to limit the for loop
             for (_date, values) in timeseries.into_iter().take(time_period.try_into().unwrap()) {
                     let close = values["4. close"].as_str().unwrap().parse::<f64>().context("unable to grab close value from timeseries")?;
+                    let volume = values["6. volume"].as_str().unwrap().parse::<f64>().context("unable to grab volume from timeseries")?;
                     closing_prices.push(close);
+                    volumes.push(volume);
             }
         },
         None => {
@@ -86,14 +89,14 @@ fn harvest_stock_metrics(time_period: i16, symbol_data: serde_json::Value, symbo
         }
     };
 //TODO
-    let stock_data = generate_stock_metrics(closing_prices, symbol)?;
+    let stock_data = generate_stock_metrics(closing_prices.clone(), volumes.clone(), symbol)?;
+
+    
+    let stock_data = generate_stock_metrics(closing_prices.clone(), volumes.clone(), symbol)?;
 
     let stock = StockData {
         symbol: symbol.to_string(),
-        mean_return: stock_data.mean_return,
-        variance: stock_data.variance,
-        standard_deviation: stock_data.standard_deviation,
-        mean_value: stock_data.mean_value,
+        basic_metrics: stock_data.basic_metrics,
         time_period: stock_data.time_period,
         daily_states: stock_data.daily_states,
     };
@@ -102,7 +105,6 @@ fn harvest_stock_metrics(time_period: i16, symbol_data: serde_json::Value, symbo
 
 //#[allow(dead_code)]
 fn compile_stock_data(client_requested_symbols: Vec<&str>, api_key: &str, time_period: i16) -> Result<Vec<StockData>>{
-    //TODO presentable output of all data === MIGHT NEED & ref for symbols and api key
     let mut compiled_data = Vec::new(); 
     for symbol in client_requested_symbols {
         compiled_data.push(harvest_stock_metrics(time_period, get_stock_symbol_data(symbol, api_key)?, symbol)?);
@@ -122,7 +124,7 @@ fn grab_client_config() -> Result<ClientConfig, ConfigError> {
     Ok(client_config)
 }
 
-fn handle_client_internal_interface() -> Result<(Vec<StockData>)> {
+fn handle_client_internal_interface() -> Result<Vec<StockData>> {
     let client_config = grab_client_config().context("unable to load client config")?;
     let api_key = &client_config.api_key;
     let symbols = &client_config.symbols;
@@ -130,13 +132,20 @@ fn handle_client_internal_interface() -> Result<(Vec<StockData>)> {
     let symbols_str: Vec<&str> = client_config.symbols.iter().map(AsRef::as_ref).collect();
     Ok(compile_stock_data(symbols_str, &api_key, *time_period)?)
 }
+/* Generate stock metrics breakdown
+ * (1) calculate metrics
+ *  to me this function seems pretty simple, maybe make it more readable in general?
+ *  to me it should just take a stockdata and modify it then return it though....t a
+ */
 
 fn generate_stock_metrics(
     closing_prices: Vec<f64>,
+    volumes: Vec<f64>,
     symbol: &str,
 ) -> Result<StockData> {
     let mut returns: Vec<f64> = Vec::new();
     let mut total_quantity: f64 = 0.0;
+    let mut total_quantity_volume: f64 = 0.0;
 
     let mut daily_states: Vec<DailyStockData> = Vec::new();
 
@@ -144,41 +153,43 @@ fn generate_stock_metrics(
         let change_in_value = closing_prices[i+1] - closing_prices[i];
         let daily_return = change_in_value / closing_prices[i];
         let daily_stock_data = DailyStockData {
-            price: closing_prices[i],
+            closing_price: closing_prices[i],
+            volume: volumes[i],
             change_in_value: change_in_value,
         };
         daily_states.push(daily_stock_data);
-
+        total_quantity_volume += volumes[i];
         total_quantity += closing_prices[i];
         returns.push(daily_return);
     }
     let mean_return = returns.clone().mean();
     let variance = returns.variance();
     let standard_deviation = variance.sqrt();
-    //double checking TODO LOOKS GOOD
-    //    println!("Number of closing prices: {}", closing_prices.len());
     let mean_value = total_quantity / closing_prices.len() as f64;
+    let mean_volume = total_quantity_volume / volumes.len() as f64;
     let time_period = closing_prices.len() as i16;
-    //TODO weird layered logic here StockData -> StockData
+
+
     Ok(StockData {
         symbol: symbol.to_string(),
-        mean_return,
-        variance,
-        standard_deviation,
-        mean_value,
-        time_period,
-        daily_states,
+        basic_metrics: BasicMetrics {
+            mean_return: mean_return,
+            mean_value: mean_value,
+            mean_volume: mean_volume,
+            variance: variance,
+            standard_deviation: standard_deviation,
+        },
+        time_period: time_period,
+        daily_states: daily_states,
     })
 }
-//TODO brain dead to this logic atm
-//
 
 fn find_most_performant(stock: Vec<StockData>) -> Result<()> {
     let most_performant = stock
         .iter()
         .max_by(|a, b| {
-            let adjusted_performance_a = a.mean_return / a.mean_value;
-            let adjusted_performance_b = b.mean_return / b.mean_value;
+            let adjusted_performance_a = a.basic_metrics.mean_return / a.basic_metrics.mean_value;
+            let adjusted_performance_b = b.basic_metrics.mean_return / b.basic_metrics.mean_value;
             match (adjusted_performance_a.is_nan(), adjusted_performance_b.is_nan()) {
                 (true, true) => std::cmp::Ordering::Equal,
                 (true, false) => std::cmp::Ordering::Less,
@@ -194,7 +205,7 @@ fn find_most_performant(stock: Vec<StockData>) -> Result<()> {
     println!("Stock Symbol: {}", most_performant.symbol);
     println!(
         "Performance Score: {}",
-        most_performant.mean_return / most_performant.mean_value
+        most_performant.basic_metrics.mean_return / most_performant.basic_metrics.mean_value
     );
     Ok(())
 }
@@ -229,12 +240,12 @@ fn main() -> Result<()> {
     let stock_data = handle_client_internal_interface()?;
     for stock in &stock_data {
         println!("Stock Symbol: {}", stock.symbol);
-        println!("Mean value return (last {} days): {}", stock.time_period,stock.mean_return);
-        println!("Variance of value (last {} days): {}", stock.time_period,stock.variance);
+        println!("Mean value return (last {} days): {}", stock.time_period,stock.basic_metrics.mean_return);
+        println!("Variance of value (last {} days): {}", stock.time_period,stock.basic_metrics.variance);
         println!(
             "Standard deviation of value (last {} days): {}",
-            stock.time_period, stock.standard_deviation);
-        println!("Mean value (last {} days): {}", stock.time_period, stock.mean_value);
+            stock.time_period, stock.basic_metrics.standard_deviation);
+        println!("Mean value (last {} days): {}", stock.time_period, stock.basic_metrics.mean_value);
         println!();
     }
     find_most_performant(stock_data)?;
