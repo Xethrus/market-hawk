@@ -80,7 +80,7 @@ fn make_api_request(client_config: ClientConfig) -> Result<Vec<u8>>{
     request_data
 }
 
-fn get_stock_symbols_data(request_data: Vec<u8>) -> Result<serde_json::Value> {
+fn get_stock_symbol_data(request_data: Vec<u8>) -> Result<serde_json::Value> {
     let response_body =
         str::from_utf8(&request_data).context("unable to convert request data from utf8")?;
     let data: Value = serde_json::from_str(&response_body)
@@ -132,7 +132,7 @@ fn generate_closing_from_timeseries(symbols_data: serde_json::Value, client_conf
 fn generate_basic_metrics(
     closings: Vec<f64>,
     volumes: Vec<f64>,
-) -> Result<BasicMetrics> {
+) -> Result<(BasicMetrics, daily_states)> {
 
     let mut returns: Vec<f64> = Vec::new();
     let mut total_quantity: f64 = 0.0;
@@ -166,23 +166,20 @@ fn generate_basic_metrics(
         mean_volume: mean_volume,
         variance: variance,
         standard_deviation: standard_deviation,
-    },
-    })
+    }, daily_states)
 }
 
 fn apply_stock_metrics(
-    closing_prices: Vec<f64>,
-    volumes: Vec<f64>
+    basic_metrics: BasicMetrics,
+    daily_states: Vec<DailyStockData>,
+    symbol: String,
+    time_period: i16
 )   -> Result<StockData> {
-    let stock_data = generate_stock_metrics(closing_prices.clone(), volumes.clone(), symbol)?;
-
-    let stock_data = generate_stock_metrics(closing_prices.clone(), volumes.clone(), symbol)?;
-
-    let stock = StockData {
+    let stock: StockData = {
         symbol: symbol.to_string(),
-        basic_metrics: stock_data.basic_metrics,
-        time_period: stock_data.time_period,
-        daily_states: stock_data.daily_states,
+        basic_metrics: basic_metrics,
+        time_period: client_config.time_period,
+        daily_states: daily_states,
     };
     Ok(stock)
 }
@@ -192,31 +189,28 @@ fn compile_stock_data(
     client_requested_symbols: Vec<String>,
     api_key: &str,
     time_period: i16,
-) -> Result<Vec<StockData>> {
+) -> Result<(Vec<StockData>, ClientConfig)> {
     let mut compiled_data = Vec::new();
     for symbol in client_requested_symbols {
-        compiled_data.push(harvest_stock_metrics(
-            time_period,
-            get_stock_symbol_data(symbol, api_key)?,
-            symbol,
-        )?);
+        let config = grab_client_config();
+        let request_data = make_api_request(config);
+        let stock_symbol_data = get_stock_symbol_data(request_data);
+        let volumes = generate_volume_from_timeseries(stock_symbol_data);
+        let closings = generate_closings_from_timeseries(stock_symbol_data);
+        let (basic_metrics, daily_states) = generate_basic_metrics(volumes, closings);
+        let stock = apply_stock_metrics(basic_metrics, daily_states, symbol, time_period);
+        compiled_data.push(stock);
     }
-    Ok(compiled_data)
+    Ok(compiled_data, ClientConfig)
 }
 
 fn handle_client_internal_interface() -> Result<Vec<StockData>> {
-    let client_config = grab_client_config().context("unable to load client config")?;
-    let api_key = &client_config.api_key;
-    let symbols = &client_config.symbols;
-    let time_period = &client_config.time_period;
-    let symbols_str: Vec<&str> = client_config.symbols.iter().map(AsRef::as_ref).collect();
-    Ok(compile_stock_data(symbols_str, &api_key, *time_period)?)
+    let config = grab_client_config();
+    let requested_symbols = config.symbols;
+    let api_key = config.api_key;
+    let time_period = config.time_period;
+    Ok(compile_stock_data(requested_symbols, &api_key, *time_period)?)
 }
-/* Generate stock metrics breakdown
- * (1) calculate metrics
- *  to me this function seems pretty simple, maybe make it more readable in general?
- *  to me it should just take a stockdata and modify it then return it though....t a
- */
 
 fn find_most_performant(stock: Vec<StockData>) -> Result<()> {
     let most_performant = stock
