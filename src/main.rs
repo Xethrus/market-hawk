@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use anyhow::anyhow;
 use curl::easy::Easy;
 use serde::Deserialize;
 use serde_json::Value;
@@ -37,15 +38,15 @@ struct ClientConfig {
     time_period: i16,
 }
 
-impl StockData {
-    fn update(&mut self, api_key: &str) -> Result<()> {
-        Ok(*self = harvest_stock_metrics(
-            self.time_period,
-            get_stock_symbol_data(&self.symbol, api_key)?,
-            self.symbol.as_str(),
-        )?)
-    }
-}
+//impl StockData {
+//    fn update(&mut self, api_key: &str) -> Result<()> {
+//        Ok(*self = harvest_stock_metrics(
+//            self.time_period,
+//            get_stock_symbol_data(&self.symbol, api_key)?,
+//            self.symbol.as_str(),
+//        )?)
+//    }
+//}
 
 fn grab_client_config() -> Result<ClientConfig, ConfigError> {
     let configuration = Config::default();
@@ -61,12 +62,12 @@ fn grab_client_config() -> Result<ClientConfig, ConfigError> {
 }
 
 
-fn make_api_request(client_config: ClientConfig) -> Result<Vec<u8>>{
+fn make_api_request(client_config: &ClientConfig, symbol: String) -> Result<Vec<u8>>{
     let mut easy = Easy::new();
     let mut request_data = Vec::new();
     let url = format!(
         "https://www.alphavantage.co/query?function=TIME_SERIES_DAILY_ADJUSTED&symbol={}&apikey={}",
-        client_config.symbol, client_config.api_key
+        symbol, client_config.api_key
     );
     easy.url(&url)?;
     {
@@ -77,13 +78,13 @@ fn make_api_request(client_config: ClientConfig) -> Result<Vec<u8>>{
         })?;
         transfer.perform()?;
     }
-    request_data
+    Ok(request_data)
 }
 
 fn get_stock_symbol_data(request_data: Vec<u8>) -> Result<serde_json::Value> {
     let response_body =
         str::from_utf8(&request_data).context("unable to convert request data from utf8")?;
-    let data: Value = serde_json::from_str(&response_body)
+    let symbols_data: Value = serde_json::from_str(&response_body)
         .context("unable to extract json from response body")?;
     Ok(symbols_data)
 }
@@ -96,43 +97,44 @@ fn get_stock_symbol_data(request_data: Vec<u8>) -> Result<serde_json::Value> {
  * generate_stock_metrics function?
  */
 
-fn generate_volume_from_timeseries(symbols_data: serde_json::Value, client_config: ClientConfig) -> Result<Vec<f64>> {
-    let mut volumes = Vec::new();
-
-    symbol_data["Time Series (Daily)"].as_object() {
-        Some(symbol_data["Time Series (Daily)"]) => {
-            for(_date, values) in symbols_data["Time Series (Daily)"].into_iter().take(client_config.time_period.try_into()?) {
-                let volume = values["6. volume"]
-                    .as_str()?
-                    .parse::<f64>()
-                    .context("unable to get volume from timeseries")?;
-                volumes.push(volume);
-            }
+fn generate_volume_from_timeseries(symbols_data: serde_json::Value, client_config: &ClientConfig) -> Result<Vec<f64>> {
+    let mut volumes= Vec::new();
+    if let Some(time_series) = symbols_data["Time Series (Daily)"].as_object() {
+        for (_date, values) in time_series.into_iter().take(client_config.time_period.try_into()?) {
+            let volume = values["6. volume"]
+                .as_str()
+                .ok_or_else(|| anyhow!("unable to get volume from timeseries"))?
+                .parse::<f64>()
+                .map_err(|_| anyhow!("unable to parse volume as f64"))?;
+            volumes.push(volume);
         }
+    } else {
+        return Err(anyhow!("Time Series (Daily) data not found in symbols_data"));
     }
-    volumes
+    Ok(volumes)
 }
 
-fn generate_closing_from_timeseries(symbols_data: serde_json::Value, client_config: ClientConfig) -> Result<Vec<f64>> {
+fn generate_closings_from_timeseries(symbols_data: serde_json::Value, client_config: ClientConfig) -> Result<Vec<f64>> {
     let mut closings = Vec::new();
-    symbol_data["Time Series (Daily)"].as_object() {
-        Some(symbol_data["Time Series (Daily)"]) => {
-            for(_date, values) in symbols_data["Time Series (Daily)"].into_iter().take(client_config.time_period.try_into()?) {
-                let closing = values["4. close"]
-                    .as_str()?
-                    .parse::<f64>()
-                    .context("unable to get volume from timeseries")?;
-                closings.push(closing);
-            }
+    if let Some(time_series) = symbols_data["Time Series (Daily)"].as_object() {
+        for (_date, values) in time_series.into_iter().take(client_config.time_period.try_into()?) {    
+            let closing = values["4. close"]
+                .as_str()
+                .ok_or_else(|| anyhow!("unable to get closing price from timeseries"))?
+                .parse::<f64>()
+                .map_err(|_| anyhow!("unable to parse closing price as f64"))?;
+            closings.push(closing);
         }
+    } else {
+        return Err(anyhow!("Time Series (Daily) data not found in symbols_data"));
     }
-    closings
+    Ok(closings)
 }
 
 fn generate_basic_metrics(
     closings: Vec<f64>,
     volumes: Vec<f64>,
-) -> Result<(BasicMetrics, daily_states)> {
+) -> Result<(BasicMetrics, Vec<DailyStockData>)> {
 
     let mut returns: Vec<f64> = Vec::new();
     let mut total_quantity: f64 = 0.0;
@@ -140,33 +142,33 @@ fn generate_basic_metrics(
 
     let mut daily_states: Vec<DailyStockData> = Vec::new();
 
-    for i in 0..closing_prices.len() - 1 {
-        let change_in_value = closing_prices[i + 1] - closing_prices[i];
-        let daily_return = change_in_value / closing_prices[i];
+    for i in 0..closings.len() - 1 {
+        let change_in_value = closings[i + 1] - closings[i];
+        let daily_return = change_in_value / closings[i];
         let daily_stock_data = DailyStockData {
-            closing_price: closing_prices[i],
+            closing_price: closings[i],
             volume: volumes[i],
             change_in_value: change_in_value,
         };
         daily_states.push(daily_stock_data);
         total_quantity_volume += volumes[i];
-        total_quantity += closing_prices[i];
+        total_quantity += closings[i];
         returns.push(daily_return);
     }
     let mean_return = returns.clone().mean();
     let variance = returns.variance();
     let standard_deviation = variance.sqrt();
-    let mean_value = total_quantity / closing_prices.len() as f64;
+    let mean_value = total_quantity / closings.len() as f64;
     let mean_volume = total_quantity_volume / volumes.len() as f64;
-    let time_period = closing_prices.len() as i16;
+    let time_period = closings.len() as i16;
 
-    Ok(BasicMetrics {
+    Ok((BasicMetrics {
         mean_return: mean_return,
         mean_value: mean_value,
         mean_volume: mean_volume,
         variance: variance,
         standard_deviation: standard_deviation,
-    }, daily_states)
+    }, daily_states))
 }
 
 fn apply_stock_metrics(
@@ -175,10 +177,10 @@ fn apply_stock_metrics(
     symbol: String,
     time_period: i16
 )   -> Result<StockData> {
-    let stock: StockData = {
+    let stock = StockData {
         symbol: symbol.to_string(),
         basic_metrics: basic_metrics,
-        time_period: client_config.time_period,
+        time_period: time_period,
         daily_states: daily_states,
     };
     Ok(stock)
@@ -189,27 +191,27 @@ fn compile_stock_data(
     client_requested_symbols: Vec<String>,
     api_key: &str,
     time_period: i16,
-) -> Result<(Vec<StockData>, ClientConfig)> {
+) -> Result<Vec<StockData>> {
     let mut compiled_data = Vec::new();
     for symbol in client_requested_symbols {
-        let config = grab_client_config();
-        let request_data = make_api_request(config);
-        let stock_symbol_data = get_stock_symbol_data(request_data);
-        let volumes = generate_volume_from_timeseries(stock_symbol_data);
-        let closings = generate_closings_from_timeseries(stock_symbol_data);
-        let (basic_metrics, daily_states) = generate_basic_metrics(volumes, closings);
-        let stock = apply_stock_metrics(basic_metrics, daily_states, symbol, time_period);
+        let config = grab_client_config()?;
+        let request_data = make_api_request(&config, symbol.clone())?;
+        let stock_symbol_data = get_stock_symbol_data(request_data)?;
+        let volumes = generate_volume_from_timeseries(stock_symbol_data.clone(), &config)?;
+        let closings = generate_closings_from_timeseries(stock_symbol_data, config)?;
+        let (basic_metrics, daily_states) = generate_basic_metrics(volumes, closings)?;
+        let stock = apply_stock_metrics(basic_metrics, daily_states, symbol, time_period)?;
         compiled_data.push(stock);
     }
-    Ok(compiled_data, ClientConfig)
+    Ok(compiled_data)
 }
 
 fn handle_client_internal_interface() -> Result<Vec<StockData>> {
-    let config = grab_client_config();
+    let config = grab_client_config()?;
     let requested_symbols = config.symbols;
     let api_key = config.api_key;
     let time_period = config.time_period;
-    Ok(compile_stock_data(requested_symbols, &api_key, *time_period)?)
+    Ok(compile_stock_data(requested_symbols, &api_key, time_period)?)
 }
 
 fn find_most_performant(stock: Vec<StockData>) -> Result<()> {
