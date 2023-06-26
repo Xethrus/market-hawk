@@ -1,14 +1,13 @@
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
 use curl::easy::Easy;
-use serde_json::Value;
 use serde::Deserialize;
-
+use serde_json::Value;
 
 use statrs::statistics::Statistics;
 use std::str;
 
-use config::{Config, File, FileFormat};
 use config::ConfigError;
+use config::{Config, File, FileFormat};
 
 struct StockData {
     symbol: String,
@@ -40,17 +39,34 @@ struct ClientConfig {
 
 impl StockData {
     fn update(&mut self, api_key: &str) -> Result<()> {
-        Ok(*self = harvest_stock_metrics(self.time_period, get_stock_symbol_data(&self.symbol, api_key)?, self.symbol.as_str())?)
+        Ok(*self = harvest_stock_metrics(
+            self.time_period,
+            get_stock_symbol_data(&self.symbol, api_key)?,
+            self.symbol.as_str(),
+        )?)
     }
 }
 
+fn grab_client_config() -> Result<ClientConfig, ConfigError> {
+    let configuration = Config::default();
+    let configuration = Config::builder()
+        .add_source(File::new("config.toml", FileFormat::Toml))
+        .build()?;
+    let client_config: ClientConfig = ClientConfig {
+        api_key: configuration.get::<String>("configuration.api_key")?,
+        symbols: configuration.get::<Vec<String>>("configuration.symbols")?,
+        time_period: configuration.get::<i16>("configuration.time_period")?,
+    };
+    Ok(client_config)
+}
 
-fn get_stock_symbol_data(symbol: &str, api_key: &str) -> Result<serde_json::Value> {
+
+fn make_api_request(client_config: ClientConfig) -> Result<Vec<u8>>{
     let mut easy = Easy::new();
     let mut request_data = Vec::new();
     let url = format!(
         "https://www.alphavantage.co/query?function=TIME_SERIES_DAILY_ADJUSTED&symbol={}&apikey={}",
-        symbol, api_key
+        client_config.symbol, client_config.api_key
     );
     easy.url(&url)?;
     {
@@ -61,10 +77,17 @@ fn get_stock_symbol_data(symbol: &str, api_key: &str) -> Result<serde_json::Valu
         })?;
         transfer.perform()?;
     }
-    let response_body = str::from_utf8(&request_data).context("unable to convert request data from utf8")?;
-    let data: Value = serde_json::from_str(&response_body).context("unable to extract json from response body")?;
-    Ok(data)
+    request_data
 }
+
+fn get_stock_symbols_data(request_data: Vec<u8>) -> Result<serde_json::Value> {
+    let response_body =
+        str::from_utf8(&request_data).context("unable to convert request data from utf8")?;
+    let data: Value = serde_json::from_str(&response_body)
+        .context("unable to extract json from response body")?;
+    Ok(symbols_data)
+}
+
 /*
  * Harvest_stock_metrics breakdown
  * TODO
@@ -72,77 +95,45 @@ fn get_stock_symbol_data(symbol: &str, api_key: &str) -> Result<serde_json::Valu
  * (2) gather stock_data (is this useful?!!?!) Not sure on this one. maybe just use the
  * generate_stock_metrics function?
  */
-fn harvest_stock_metrics(time_period: i16, symbol_data: serde_json::Value, symbol: &str) -> Result<StockData> {
-    let mut closing_prices = Vec::new();
+
+fn generate_volume_from_timeseries(symbols_data: serde_json::Value, client_config: ClientConfig) -> Result<Vec<f64>> {
     let mut volumes = Vec::new();
-    let timeseries = match symbol_data["Time Series (Daily)"].as_object() {
-        Some(timeseries) => {
-            for (_date, values) in timeseries.into_iter().take(time_period.try_into().unwrap()) {
-                    let close = values["4. close"].as_str().unwrap().parse::<f64>().context("unable to grab close value from timeseries")?;
-                    let volume = values["6. volume"].as_str().unwrap().parse::<f64>().context("unable to grab volume from timeseries")?;
-                    closing_prices.push(close);
-                    volumes.push(volume);
+
+    symbol_data["Time Series (Daily)"].as_object() {
+        Some(symbol_data["Time Series (Daily)"]) => {
+            for(_date, values) in symbols_data["Time Series (Daily)"].into_iter().take(client_config.time_period.try_into()?) {
+                let volume = values["6. volume"]
+                    .as_str()?
+                    .parse::<f64>()
+                    .context("unable to get volume from timeseries")?;
+                volumes.push(volume);
             }
-        },
-        None => {
-                println!("{:#?}", symbol_data); // TODO Top tier debug print
         }
-    };
-//TODO
-    let stock_data = generate_stock_metrics(closing_prices.clone(), volumes.clone(), symbol)?;
-
-    
-    let stock_data = generate_stock_metrics(closing_prices.clone(), volumes.clone(), symbol)?;
-
-    let stock = StockData {
-        symbol: symbol.to_string(),
-        basic_metrics: stock_data.basic_metrics,
-        time_period: stock_data.time_period,
-        daily_states: stock_data.daily_states,
-    };
-    Ok(stock)
-}
-
-//#[allow(dead_code)]
-fn compile_stock_data(client_requested_symbols: Vec<&str>, api_key: &str, time_period: i16) -> Result<Vec<StockData>>{
-    let mut compiled_data = Vec::new(); 
-    for symbol in client_requested_symbols {
-        compiled_data.push(harvest_stock_metrics(time_period, get_stock_symbol_data(symbol, api_key)?, symbol)?);
     }
-    Ok(compiled_data)
+    volumes
 }
 
-
-fn grab_client_config() -> Result<ClientConfig, ConfigError> {
-    let configuration = Config::default();
-    let configuration = Config::builder().add_source(File::new("config.toml", FileFormat::Toml)).build()?;
-    let client_config: ClientConfig = ClientConfig {
-        api_key: configuration.get::<String>("configuration.api_key")?,
-        symbols: configuration.get::<Vec<String>>("configuration.symbols")?,
-        time_period: configuration.get::<i16>("configuration.time_period")?,
-    };
-    Ok(client_config)
+fn generate_closing_from_timeseries(symbols_data: serde_json::Value, client_config: ClientConfig) -> Result<Vec<f64>> {
+    let mut closings = Vec::new();
+    symbol_data["Time Series (Daily)"].as_object() {
+        Some(symbol_data["Time Series (Daily)"]) => {
+            for(_date, values) in symbols_data["Time Series (Daily)"].into_iter().take(client_config.time_period.try_into()?) {
+                let closing = values["4. close"]
+                    .as_str()?
+                    .parse::<f64>()
+                    .context("unable to get volume from timeseries")?;
+                closings.push(closing);
+            }
+        }
+    }
+    closings
 }
 
-fn handle_client_internal_interface() -> Result<Vec<StockData>> {
-    let client_config = grab_client_config().context("unable to load client config")?;
-    let api_key = &client_config.api_key;
-    let symbols = &client_config.symbols;
-    let time_period = &client_config.time_period;
-    let symbols_str: Vec<&str> = client_config.symbols.iter().map(AsRef::as_ref).collect();
-    Ok(compile_stock_data(symbols_str, &api_key, *time_period)?)
-}
-/* Generate stock metrics breakdown
- * (1) calculate metrics
- *  to me this function seems pretty simple, maybe make it more readable in general?
- *  to me it should just take a stockdata and modify it then return it though....t a
- */
-
-fn generate_stock_metrics(
-    closing_prices: Vec<f64>,
+fn generate_basic_metrics(
+    closings: Vec<f64>,
     volumes: Vec<f64>,
-    symbol: &str,
-) -> Result<StockData> {
+) -> Result<BasicMetrics> {
+
     let mut returns: Vec<f64> = Vec::new();
     let mut total_quantity: f64 = 0.0;
     let mut total_quantity_volume: f64 = 0.0;
@@ -150,7 +141,7 @@ fn generate_stock_metrics(
     let mut daily_states: Vec<DailyStockData> = Vec::new();
 
     for i in 0..closing_prices.len() - 1 {
-        let change_in_value = closing_prices[i+1] - closing_prices[i];
+        let change_in_value = closing_prices[i + 1] - closing_prices[i];
         let daily_return = change_in_value / closing_prices[i];
         let daily_stock_data = DailyStockData {
             closing_price: closing_prices[i],
@@ -169,20 +160,63 @@ fn generate_stock_metrics(
     let mean_volume = total_quantity_volume / volumes.len() as f64;
     let time_period = closing_prices.len() as i16;
 
-
-    Ok(StockData {
-        symbol: symbol.to_string(),
-        basic_metrics: BasicMetrics {
-            mean_return: mean_return,
-            mean_value: mean_value,
-            mean_volume: mean_volume,
-            variance: variance,
-            standard_deviation: standard_deviation,
-        },
-        time_period: time_period,
-        daily_states: daily_states,
+    Ok(BasicMetrics {
+        mean_return: mean_return,
+        mean_value: mean_value,
+        mean_volume: mean_volume,
+        variance: variance,
+        standard_deviation: standard_deviation,
+    },
     })
 }
+
+fn apply_stock_metrics(
+    closing_prices: Vec<f64>,
+    volumes: Vec<f64>
+)   -> Result<StockData> {
+    let stock_data = generate_stock_metrics(closing_prices.clone(), volumes.clone(), symbol)?;
+
+    let stock_data = generate_stock_metrics(closing_prices.clone(), volumes.clone(), symbol)?;
+
+    let stock = StockData {
+        symbol: symbol.to_string(),
+        basic_metrics: stock_data.basic_metrics,
+        time_period: stock_data.time_period,
+        daily_states: stock_data.daily_states,
+    };
+    Ok(stock)
+}
+
+//#[allow(dead_code)]
+fn compile_stock_data(
+    client_requested_symbols: Vec<String>,
+    api_key: &str,
+    time_period: i16,
+) -> Result<Vec<StockData>> {
+    let mut compiled_data = Vec::new();
+    for symbol in client_requested_symbols {
+        compiled_data.push(harvest_stock_metrics(
+            time_period,
+            get_stock_symbol_data(symbol, api_key)?,
+            symbol,
+        )?);
+    }
+    Ok(compiled_data)
+}
+
+fn handle_client_internal_interface() -> Result<Vec<StockData>> {
+    let client_config = grab_client_config().context("unable to load client config")?;
+    let api_key = &client_config.api_key;
+    let symbols = &client_config.symbols;
+    let time_period = &client_config.time_period;
+    let symbols_str: Vec<&str> = client_config.symbols.iter().map(AsRef::as_ref).collect();
+    Ok(compile_stock_data(symbols_str, &api_key, *time_period)?)
+}
+/* Generate stock metrics breakdown
+ * (1) calculate metrics
+ *  to me this function seems pretty simple, maybe make it more readable in general?
+ *  to me it should just take a stockdata and modify it then return it though....t a
+ */
 
 fn find_most_performant(stock: Vec<StockData>) -> Result<()> {
     let most_performant = stock
@@ -190,18 +224,26 @@ fn find_most_performant(stock: Vec<StockData>) -> Result<()> {
         .max_by(|a, b| {
             let adjusted_performance_a = a.basic_metrics.mean_return / a.basic_metrics.mean_value;
             let adjusted_performance_b = b.basic_metrics.mean_return / b.basic_metrics.mean_value;
-            match (adjusted_performance_a.is_nan(), adjusted_performance_b.is_nan()) {
+            match (
+                adjusted_performance_a.is_nan(),
+                adjusted_performance_b.is_nan(),
+            ) {
                 (true, true) => std::cmp::Ordering::Equal,
                 (true, false) => std::cmp::Ordering::Less,
                 (false, true) => std::cmp::Ordering::Greater,
-                (false, false) => adjusted_performance_a.partial_cmp(&adjusted_performance_b).unwrap_or(std::cmp::Ordering::Equal),
+                (false, false) => adjusted_performance_a
+                    .partial_cmp(&adjusted_performance_b)
+                    .unwrap_or(std::cmp::Ordering::Equal),
             }
         })
-        .context("unable to calculate most performant stock (all)")?;
+        .context("unable to calculate most performant stock")?;
 
     println!("A higher performance score is better");
     println!("");
-    println!("Most performant stock in the last {} days...", most_performant.time_period);
+    println!(
+        "Most performant stock in the last {} days...",
+        most_performant.time_period
+    );
     println!("Stock Symbol: {}", most_performant.symbol);
     println!(
         "Performance Score: {}",
@@ -233,19 +275,29 @@ fn validate_api_key(api_key: &str) -> Result<bool> {
 
 fn main() -> Result<()> {
     //api validation test code
-//    let api_validation = validate_api_key("81I9AVPLTTFBVASS")?;
-//    if api_validation == true {
-//        println!("api key validated");
-//    }
+    //    let api_validation = validate_api_key("81I9AVPLTTFBVASS")?;
+    //    if api_validation == true {
+    //        println!("api key validated");
+    //    }
     let stock_data = handle_client_internal_interface()?;
     for stock in &stock_data {
         println!("Stock Symbol: {}", stock.symbol);
-        println!("Mean value return (last {} days): {}", stock.time_period,stock.basic_metrics.mean_return);
-        println!("Variance of value (last {} days): {}", stock.time_period,stock.basic_metrics.variance);
+        println!(
+            "Mean value return (last {} days): {}",
+            stock.time_period, stock.basic_metrics.mean_return
+        );
+        println!(
+            "Variance of value (last {} days): {}",
+            stock.time_period, stock.basic_metrics.variance
+        );
         println!(
             "Standard deviation of value (last {} days): {}",
-            stock.time_period, stock.basic_metrics.standard_deviation);
-        println!("Mean value (last {} days): {}", stock.time_period, stock.basic_metrics.mean_value);
+            stock.time_period, stock.basic_metrics.standard_deviation
+        );
+        println!(
+            "Mean value (last {} days): {}",
+            stock.time_period, stock.basic_metrics.mean_value
+        );
         println!();
     }
     find_most_performant(stock_data)?;
