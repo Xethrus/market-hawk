@@ -320,7 +320,23 @@ mod unit_tests {
 
     #[test]
     fn test_get_stock_symbols_data() -> Result<()> {
-        
+        let expected_data = json!({
+            "key": "value"
+        });
+        let json_string = expected_data.to_string();
+        let json_bytes = json_string.into_bytes();
+
+        let result = get_stock_symbol_data(json_bytes).context("get_stock_symbol_data test faulty")?;
+        assert_eq!(result, expected_data);
+
+        let invalid_utf8_bytes = vec![0, 159, 146, 150];  // Not valid UTF-8
+        let result = get_stock_symbol_data(invalid_utf8_bytes);
+        assert!(result.is_err());
+
+        let invalid_json_bytes = b"{ invalid json".to_vec();  // Not valid JSON
+        let result = get_stock_symbol_data(invalid_json_bytes);
+        assert!(result.is_err());
+        Ok(())
     }
 }
 
