@@ -3,6 +3,7 @@ use anyhow::anyhow;
 use curl::easy::Easy;
 use serde::Deserialize;
 use serde_json::Value;
+use serde_json::json;
 
 use statrs::statistics::Statistics;
 use std::str;
@@ -269,15 +270,34 @@ fn validate_api_key(api_key: &str) -> Result<bool> {
     Ok(!response_str.contains("\"Note\""))
 }
 
+fn calculate_rsi(daily_states: Vec<DailyStockData>, time_period: u16) -> Result<f64> {
+    let mut losing_days = 0.0;
+    let mut winning_days = 0.0;
+    let mut avg_loss = 0.0;
+    let mut avg_gain = 0.0;
+    for state in daily_states {
+        if state.change_in_value < 0.0 {
+            losing_days += 1.0;
+            avg_loss += state.change_in_value;
+        } else if state.change_in_value > 0.0 {
+            winning_days += 1.0;
+        }
+    }
+    avg_loss = avg_loss / losing_days;
+    avg_gain = avg_gain / winning_days;
+    let mut rs: f64 = avg_gain/avg_loss;
+    let mut rsi = 100.0 - (100.0/(1.0+rs));
+    Ok(rsi)
+}
+
 // Unit tests
 #[cfg(test)]
 mod unit_tests {
     use super::*;
 
-    #[test]
-    use std::fs::File;
     use std::io::Write;
     use tempfile::NamedTempFile;
+    #[test]
     fn test_grab_client_config() -> Result<()> {
         let mut temp_file = NamedTempFile::new().context("issue with tempfile")?;
         writeln!(temp_file, r#"
@@ -300,9 +320,13 @@ mod unit_tests {
         Ok(())
     }
 
-    #[test]
     use mockito::{mock, Matcher};
+    #[test]
     fn test_make_api_request() -> Result<()> {
+        let mut server = mockito::Server::new();
+        let host = server.host_with_port();
+        let url = server.url();
+
         let _m = mock("GET", Matcher::Regex(r"^/query".to_string()))
             .with_status(200)
             .with_body("api response")
@@ -345,7 +369,7 @@ fn main() -> Result<()> {
     //    let api_validation = validate_api_key("81I9AVPLTTFBVASS")?;
     //    if api_validation == true {
     //        println!("api key validated");
-    //    }
+    //    value_changevalue_change  }
     let stock_data = handle_client_internal_interface()?;
     for stock in &stock_data {
         println!("Stock Symbol: {}", stock.symbol);
