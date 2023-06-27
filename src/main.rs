@@ -269,6 +269,61 @@ fn validate_api_key(api_key: &str) -> Result<bool> {
     Ok(!response_str.contains("\"Note\""))
 }
 
+// Unit tests
+#[cfg(test)]
+mod unit_tests {
+    use super::*;
+
+    #[test]
+    use std::fs::File;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
+    fn test_grab_client_config() -> Result<()> {
+        let mut temp_file = NamedTempFile::new().context("issue with tempfile")?;
+        writeln!(temp_file, r#"
+            [configuration]
+            api_key = "demo"
+            symbols = ["AAPL", "GOOG", "MSFT"]
+            time_period = 10
+        "#).context("unable to write to tempfile")?;
+
+        let old_path = std::env::var("config.toml")?;
+        std::env::set_var("config.toml", temp_file.path());
+
+        let result = grab_client_config()?;
+
+        std::env::set_var("config.toml", old_path);
+
+        assert_eq!(result.api_key, "demo");
+        assert_eq!(result.symbols, vec!["AAPL", "GOOG", "MSFT"]);
+        assert_eq!(result.time_period, 10);
+        Ok(())
+    }
+
+    #[test]
+    use mockito::{mock, Matcher};
+    fn test_make_api_request() -> Result<()> {
+        let _m = mock("GET", Matcher::Regex(r"^/query".to_string()))
+            .with_status(200)
+            .with_body("api response")
+            .create();
+        let client_config = ClientConfig {
+            api_key: "demo".to_string(),
+            symbols: vec!["test".to_string()],
+            time_period: 30,
+        };
+
+        let response = make_api_request(&client_config, "TEST".to_string()).unwrap();
+        assert_eq!(response, b"api response");
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_stock_symbols_data() -> Result<()> {
+        
+    }
+}
+
 fn main() -> Result<()> {
     //api validation test code
     //    let api_validation = validate_api_key("81I9AVPLTTFBVASS")?;
