@@ -1,5 +1,5 @@
 [configuration]
 api_key = "81I9AVPLTTFBVASS"
 symbols = ["IBM","AAPL","GOOGL"]
-time_period = 30
+time_period = 40
 

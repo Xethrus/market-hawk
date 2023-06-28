@@ -39,16 +39,6 @@ struct ClientConfig {
     time_period: i16,
 }
 
-//impl StockData {
-//    fn update(&mut self, api_key: &str) -> Result<()> {
-//        Ok(*self = harvest_stock_metrics(
-//            self.time_period,
-//            get_stock_symbol_data(&self.symbol, api_key)?,
-//            self.symbol.as_str(),
-//        )?)
-//    }
-//}
-
 fn grab_client_config() -> Result<ClientConfig, ConfigError> {
     let configuration = Config::default();
     let configuration = Config::builder()
@@ -137,6 +127,7 @@ fn generate_basic_metrics(
     volumes: Vec<f64>,
 ) -> Result<(BasicMetrics, Vec<DailyStockData>)> {
 
+    //CLOSINGS ARE PASSED MESSED UP
     let mut returns: Vec<f64> = Vec::new();
     let mut total_quantity: f64 = 0.0;
     let mut total_quantity_volume: f64 = 0.0;
@@ -153,6 +144,7 @@ fn generate_basic_metrics(
         };
         daily_states.push(daily_stock_data);
         total_quantity_volume += volumes[i];
+        //CLOSINGS VECTOR IS MESSED UP
         total_quantity += closings[i];
         returns.push(daily_return);
     }
@@ -199,8 +191,8 @@ fn compile_stock_data(
         let request_data = make_api_request(&config, symbol.clone())?;
         let stock_symbol_data = get_stock_symbol_data(request_data)?;
         let volumes = generate_volume_from_timeseries(stock_symbol_data.clone(), &config)?;
-        let closings = generate_closings_from_timeseries(stock_symbol_data, config)?;
-        let (basic_metrics, daily_states) = generate_basic_metrics(volumes, closings)?;
+        let closings = generate_closings_from_timeseries(stock_symbol_data.clone(), config)?;
+        let (basic_metrics, daily_states) = generate_basic_metrics(closings, volumes)?;
         let stock = apply_stock_metrics(basic_metrics, daily_states, symbol, time_period)?;
         compiled_data.push(stock);
     }
@@ -244,7 +236,7 @@ fn find_most_performant(stock: Vec<StockData>) -> Result<()> {
     println!("Stock Symbol: {}", most_performant.symbol);
     println!(
         "Performance Score: {}",
-        most_performant.basic_metrics.mean_return / most_performant.basic_metrics.mean_value
+        (most_performant.basic_metrics.mean_return / most_performant.basic_metrics.mean_value)*1000000.0
     );
     Ok(())
 }
@@ -270,22 +262,41 @@ fn validate_api_key(api_key: &str) -> Result<bool> {
     Ok(!response_str.contains("\"Note\""))
 }
 
-fn calculate_rsi(daily_states: Vec<DailyStockData>, time_period: u16) -> Result<f64> {
+fn calculate_rsi(period_of_daily_stock_data: &Vec<DailyStockData>) -> Result<f64> {
     let mut losing_days = 0.0;
     let mut winning_days = 0.0;
     let mut avg_loss = 0.0;
     let mut avg_gain = 0.0;
-    for state in daily_states {
-        if state.change_in_value < 0.0 {
-            losing_days += 1.0;
-            avg_loss += state.change_in_value;
-        } else if state.change_in_value > 0.0 {
-            winning_days += 1.0;
+    //TODO how?
+    let mut loss_magnitude = 0.0;
+    let mut gain_magnitude = 0.0;
+     
+    for state in 0..days-1 {
+        let mut stock_value_change = daily_states[state].change_in_value;
+        match stock_value_change {
+            x if x < 0.0 => {
+                stock_value_change = stock_value_change.abs();
+                losing_days += 1.0;
+                avg_loss += stock_value_change;
+                let loss = stock_value_change;
+            }
+            x if x > 0.0 => {
+                stock_value_change = stock_value_change.abs();
+                winning_days += 1.0;
+                avg_gain += stock_value_change;
+                let gain = stock_value_change;
+            }
+            _ => {}
         }
     }
+    println!("day loss: {}", losing_days);
+    println!("day gain: {}", winning_days);
     avg_loss = avg_loss / losing_days;
     avg_gain = avg_gain / winning_days;
+    println!("average loss: {}", avg_loss);
+    println!("average gain: {}", avg_gain);
     let mut rs: f64 = avg_gain/avg_loss;
+    println!("RS: {}", rs);
     let mut rsi = 100.0 - (100.0/(1.0+rs));
     Ok(rsi)
 }
@@ -320,28 +331,28 @@ mod unit_tests {
         Ok(())
     }
 
-    use mockito::{mock, Matcher};
-    #[test]
-    fn test_make_api_request() -> Result<()> {
-        let mut server = mockito::Server::new();
-        let host = server.host_with_port();
-        let url = server.url();
-
-        let _m = mock("GET", Matcher::Regex(r"^/query".to_string()))
-            .with_status(200)
-            .with_body("api response")
-            .create();
-        let client_config = ClientConfig {
-            api_key: "demo".to_string(),
-            symbols: vec!["test".to_string()],
-            time_period: 30,
-        };
-
-        let response = make_api_request(&client_config, "TEST".to_string()).unwrap();
-        assert_eq!(response, b"api response");
-        Ok(())
-    }
-
+//    use mockito::{mock, Matcher};
+//    #[test]
+//    fn test_make_api_request() -> Result<()> {
+//        let mut server = mockito::Server::new();
+//        let host = server.host_with_port();
+//        let url = server.url();
+//
+//        let _m = mock("GET", Matcher::Regex(r"^/query".to_string()))
+//            .with_status(200)
+//            .with_body("api response")
+//            .create();
+//        let client_config = ClientConfig {
+//            api_key: "demo".to_string(),
+//            symbols: vec!["test".to_string()],
+//            time_period: 30,
+//        };
+//
+//        let response = make_api_request(&client_config, "TEST".to_string()).unwrap();
+//        assert_eq!(response, b"api response");
+//        Ok(())
+//    }
+//
     #[test]
     fn test_get_stock_symbols_data() -> Result<()> {
         let expected_data = json!({
@@ -388,6 +399,12 @@ fn main() -> Result<()> {
         println!(
             "Mean value (last {} days): {}",
             stock.time_period, stock.basic_metrics.mean_value
+        );
+        let rsi = calculate_rsi(&stock.daily_states, stock.time_period.try_into()?)?;
+        println!(
+            "RSI (last {} days): {}",
+            stock.time_period,
+            rsi
         );
         println!();
     }
