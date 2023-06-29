@@ -267,36 +267,24 @@ fn calculate_rsi(period_of_daily_stock_data: &Vec<DailyStockData>) -> Result<f64
     let mut winning_days = 0.0;
     let mut avg_loss = 0.0;
     let mut avg_gain = 0.0;
-    //TODO how?
-    let mut loss_magnitude = 0.0;
-    let mut gain_magnitude = 0.0;
      
-    for state in 0..days-1 {
-        let mut stock_value_change = daily_states[state].change_in_value;
-        match stock_value_change {
-            x if x < 0.0 => {
-                stock_value_change = stock_value_change.abs();
-                losing_days += 1.0;
-                avg_loss += stock_value_change;
-                let loss = stock_value_change;
-            }
-            x if x > 0.0 => {
-                stock_value_change = stock_value_change.abs();
-                winning_days += 1.0;
-                avg_gain += stock_value_change;
-                let gain = stock_value_change;
-            }
-            _ => {}
+    for daily_state in period_of_daily_stock_data {
+        if daily_state.change_in_value < 0.0 {
+            let negative_value_change = daily_state.change_in_value.abs();
+            losing_days += 1.0;
+            avg_loss += negative_value_change;
+            let loss = negative_value_change;
+        } else if daily_state.change_in_value > 0.0 {
+            winning_days += 1.0;
+            avg_gain += daily_state.change_in_value;
+            let gain = daily_state.change_in_value;
+        } else {
+            continue;
         }
     }
-    println!("day loss: {}", losing_days);
-    println!("day gain: {}", winning_days);
     avg_loss = avg_loss / losing_days;
     avg_gain = avg_gain / winning_days;
-    println!("average loss: {}", avg_loss);
-    println!("average gain: {}", avg_gain);
     let mut rs: f64 = avg_gain/avg_loss;
-    println!("RS: {}", rs);
     let mut rsi = 100.0 - (100.0/(1.0+rs));
     Ok(rsi)
 }
@@ -400,7 +388,7 @@ fn main() -> Result<()> {
             "Mean value (last {} days): {}",
             stock.time_period, stock.basic_metrics.mean_value
         );
-        let rsi = calculate_rsi(&stock.daily_states, stock.time_period.try_into()?)?;
+        let rsi = calculate_rsi(&stock.daily_states)?;
         println!(
             "RSI (last {} days): {}",
             stock.time_period,
@@ -408,6 +396,7 @@ fn main() -> Result<()> {
         );
         println!();
     }
+    //give a specific *period of time*
     find_most_performant(stock_data)?;
     Ok(())
 }
