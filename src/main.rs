@@ -10,6 +10,7 @@ use std::str;
 
 use config::ConfigError;
 use config::{Config, File, FileFormat};
+use std::io::Write;
 
 struct StockData {
     symbol: String,
@@ -39,12 +40,29 @@ struct ClientConfig {
     time_period: i16,
 }
 
+
+//fn make_fapi_request() -> Result<serde_json::Value> {
+//    let file = File::open(testing_load.json)?;
+//        let json_data: Value = serde_json::from_reader(file)?;
+//        Ok(json_data)
+//}
+
+//TODO REHAUL DATA GATHERING
+//TODO WHAT I NEED TO DO IS MAKE IT SO THAT API DATA COMES WITH ALL THE SYMBOLS AND SUCH AND THAT
+//THE LOCAL DATA DOES THE SAME, BASICALLY NEED TO FIGURE A BUNCH OF GENERAL SHIT ABOUT THAT
+//STRUCTURING AND DATA MODEL: SINCE API MAKES A CALL AND GET SOME DATA, BUT IN THEORY THE LOCAL
+//DATA IS GRABBED ALL AT ONCE THEN  "PARSED" FOR WANTED SYMBOLS hmmmmmmmmmmm
+
+
 fn grab_client_config() -> Result<ClientConfig, ConfigError> {
     let configuration = Config::default();
     let configuration = Config::builder()
         .add_source(File::new("config.toml", FileFormat::Toml))
         .build()?;
     let client_config: ClientConfig = ClientConfig {
+//TODO PUT IF SO THAT SOME NOT NEEDED IF LOCAL LIKE API KEY
+        source: configuration.get::<String>("configuration.source")?, 
+        file_path: configuration.get::<String>("configuration.file_path")?,
         api_key: configuration.get::<String>("configuration.api_key")?,
         symbols: configuration.get::<Vec<String>>("configuration.symbols")?,
         time_period: configuration.get::<i16>("configuration.time_period")?,
@@ -52,25 +70,91 @@ fn grab_client_config() -> Result<ClientConfig, ConfigError> {
     Ok(client_config)
 }
 
-
-fn make_api_request(client_config: &ClientConfig, symbol: String) -> Result<Vec<u8>>{
-    let mut easy = Easy::new();
-    let mut request_data = Vec::new();
-    let url = format!(
-        "https://www.alphavantage.co/query?function=TIME_SERIES_DAILY_ADJUSTED&symbol={}&apikey={}",
-        symbol, client_config.api_key
-    );
-    easy.url(&url)?;
-    {
-        let mut transfer = easy.transfer();
-        transfer.write_function(|new_data| {
-            request_data.extend_from_slice(new_data);
-            Ok(new_data.len())
-        })?;
-        transfer.perform()?;
-    }
-    Ok(request_data)
+trait DataSource {
+    fn fetch_data(&self) -> Result<Vec<u8>>;
 }
+
+struct ApiDataSource {
+    api_key: String,
+}
+
+impl DataSource for ApiDataSource {
+    fn fetch_data(&self) -> Result<Vec<u8>> {
+        let mut easy = Easy::new();
+        let mut response_data = Vec::new();
+        let url = format!(
+            "https://www.alphavantage.co/query?function=TIME_SERIES_DAILY_ADJUSTED&symbol={}&apikey={}",
+            self.symbol, self.api_key
+        );
+        easy.url(&url)?;
+        {
+            let mut transfer = easy.transfer();
+            transfer.write_function(|new_data| {
+                response_data.extend_from_slice(new_data);
+                Ok(new_data.len())
+            })?;
+            transfer.perform()?;
+        }
+        Ok(response_data)
+    }
+}
+
+struct LocalDataSource {
+    file_path: String,
+}
+
+impl DataSource for LocalDataSource {
+    fn fetch_data(&self) -> Result<Vec<u8>> {
+        let load_test_content = std::fs::read(self.file_path)?;
+        Ok(load_test_content)
+    }
+}
+fn make_data_request(client_config: ClientConfig) -> Result<Vec<u8>> {
+    let local = "local";
+    let api = "api";
+    if client_config.source == api {
+        let api_data_source = ApiDataSource {
+            api_key: client_config.api_key
+        };
+        api_data_source.fetch_data()
+    } else if client_config.source == local {
+        let local_data_source = LocalDataSource {
+            file_path: client_config.file_path
+        };
+        local_data_source.fetch_data()
+    } else {
+        Err(anyhow::anyhow!("Inaccurate client config data source data"))
+    }
+}
+
+
+//fn normalize_data(source: &dyn DataSource) -> Result<serde_json::Value> {
+//    let data = source.fetch_data()?;
+//    let symbol_data = get_stock_symbol_data(data);
+//}
+
+//
+
+//fn make_api_request(client_config: &ClientConfig, symbol: String) -> Result<Vec<u8>>{
+//    let mut easy = Easy::new();
+//    let mut request_data = Vec::new();
+//    let url = format!(
+//        "https://www.alphavantage.co/query?function=TIME_SERIES_DAILY_ADJUSTED&symbol={}&apikey={}",
+//        symbol, client_config.api_key
+//    );
+//    easy.url(&url)?;
+//    {
+//        let mut transfer = easy.transfer();
+//        transfer.write_function(|new_data| {
+//            request_data.extend_from_slice(new_data);
+//            Ok(new_data.len())
+//        })?;
+//        transfer.perform()?;
+//    }
+////    let mut file = std::fs::File::create("testing_load.json")?;
+////    file.write_all(&request_data)?;
+//    Ok(request_data)
+//}
 
 fn get_stock_symbol_data(request_data: Vec<u8>) -> Result<serde_json::Value> {
     let response_body =
@@ -79,6 +163,7 @@ fn get_stock_symbol_data(request_data: Vec<u8>) -> Result<serde_json::Value> {
         .context("unable to extract json from response body")?;
     Ok(symbols_data)
 }
+
 
 /*
  * Harvest_stock_metrics breakdown
@@ -100,6 +185,7 @@ fn generate_volume_from_timeseries(symbols_data: serde_json::Value, client_confi
             volumes.push(volume);
         }
     } else {
+        println!("time_series: {}", symbols_data);
         return Err(anyhow!("Time Series (Daily) data not found in symbols_data"));
     }
     Ok(volumes)
@@ -189,7 +275,8 @@ fn compile_stock_data(
     for symbol in client_requested_symbols {
         let config = grab_client_config()?;
         let request_data = make_api_request(&config, symbol.clone())?;
-        let stock_symbol_data = get_stock_symbol_data(request_data)?;
+        let test_request_data = response_for_load_testing()?;
+        let stock_symbol_data = get_stock_symbol_data(test_request_data)?;
         let volumes = generate_volume_from_timeseries(stock_symbol_data.clone(), &config)?;
         let closings = generate_closings_from_timeseries(stock_symbol_data.clone(), config)?;
         let (basic_metrics, daily_states) = generate_basic_metrics(closings, volumes)?;

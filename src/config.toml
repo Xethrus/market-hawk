@@ -1,5 +1,7 @@
 [configuration]
-api_key = "81I9AVPLTTFBVASS"
-symbols = ["IBM","AAPL","GOOGL"]
-time_period = 40
+source = "local" ## LOCAL OR API
+file_path = "testing_load" ## FILE PATH FOR LOCAL ACCESS
+api_key = "81I9AVPLTTFBVASS" ## KEY FOR API ACCESS
+symbols = ["IBM", "GOOGL"] ## STOCK SYMBOLS OF INTEREST
+time_period = 30 ##PERIOD OF TIME <=100
 
