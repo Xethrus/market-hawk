@@ -33,6 +33,20 @@ struct BasicMetrics {
     standard_deviation: f64,
 }
 
+//dont know what is needed here
+//figure out how this works
+enum Source {
+    api, 
+    local,
+}
+struct SymbolData {
+    data: serde_json::Value,
+    //maybe could denote which symbols were grabbable, this would be good for the api limit
+    symbols: Vec<String>,
+    source: Source,
+}
+
+
 #[derive(Debug, Deserialize)]
 struct ClientConfig {
     api_key: String,
@@ -88,24 +102,15 @@ fn grab_client_config() -> Result<ClientConfig, ConfigError> {
     Ok(client_config)
 }
 
-trait DataSource {
-    fn fetch_data(&self) -> Result<Vec<u8>>;
-}
-
-struct ApiDataSource {
-    api_key: String,
-    symbols: Vec<String>,
-}
-
-impl DataSource for ApiDataSource {
-    fn fetch_data(&self) -> Result<Vec<u8>> {
-        //single request single response actioning
+fn make_api_call(client_config: ClientConfig) -> Result<SymbolData> {
+    //need to make sure that this data doesnt keep calling if it reaches limit
+    let mut symbol_data = SymbolData;
+    for symbol in client_config.symbols {
         let mut easy = Easy::new();
-        for 
         let mut response_data = Vec::new();
         let url = format!(
             "https://www.alphavantage.co/query?function=TIME_SERIES_DAILY_ADJUSTED&symbol={}&apikey={}",
-            self.symbol, self.api_key
+            symbol, client_config.api_key
         );
         easy.url(&url)?;
         {
@@ -116,49 +121,27 @@ impl DataSource for ApiDataSource {
             })?;
             transfer.perform()?;
         }
-        Ok(response_data)
+        let response_data = get_stock_symbol_data(request_data)?;
+        symbols_data.extend(response_data);
     }
+    Ok(symbols_data)
 }
 
-struct LocalDataSource {
-    file_path: String,
-    symbols: Vec<String>,
-}
-
-impl DataSource for LocalDataSource {
-    //grabs all local data
-    fn fetch_data(&self) -> Result<Vec<u8>> {
-        let load_test_content = std::fs::read(self.file_path)?;
-        Ok(load_test_content)
-    }
-}
 fn make_data_request(client_config: ClientConfig) -> Result<Vec<u8>> {
     let local = "local";
     let api = "api";
     if client_config.source == api {
-        let api_data_source = ApiDataSource {
-            api_key: client_config.api_key,
-            symbols: client_config.symbols,
-        };
-        api_data_source.fetch_data()
+        //call function for api data grab
+    };
     } else if client_config.source == local {
-        let local_data_source = LocalDataSource {
-            file_path: client_config.file_path,
-            symbols: client_config.file_path,
-        };
-        local_data_source.fetch_data()
+        //call function for local data grab
     } else {
+        //error
         Err(anyhow::anyhow!("Inaccurate client config data source data"))
     }
 }
 
 
-fn normalize_data(R) -> Result<serde_json::Value> {
-    let data = source.fetch_data()?;
-    let symbol_data = get_stock_symbol_data(data);
-}
-
-//
 
 //fn make_api_request(client_config: &ClientConfig, symbol: String) -> Result<Vec<u8>>{
 //    let mut easy = Easy::new();
