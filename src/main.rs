@@ -44,6 +44,7 @@ struct SymbolData {
     //maybe could denote which symbols were grabbable, this would be good for the api limit
     symbols: Vec<String>,
     source: Source,
+    time_period: i16,
 }
 
 
@@ -107,7 +108,9 @@ fn make_api_call(client_config: ClientConfig) -> Result<SymbolData> {
     let mut symbol_data = SymbolData;
     //check syntax TODO
     let symbol_data.source = Source::api;
+    let symbol_data.time_period = client_config.time_period;
     for symbol in client_config.symbols {
+        //how can I control time period though? I think this gives me max
         let mut easy = Easy::new();
         let mut response_data = Vec::new();
         let url = format!(
@@ -140,6 +143,7 @@ fn make_api_call(client_config: ClientConfig) -> Result<SymbolData> {
 }
 fn get_local_data(client_config: ClientConfig) -> Result<SymbolData> {
     let mut symbol_data = SymbolData;
+    let symbol_data.time_period = client_config.time_period;
     let symbol_data.source = Source::local;
     let mut local_file = File::open(client_config.file_path)?;
     let json_data: Value = serde_json::from_read(file)?;
@@ -149,15 +153,16 @@ fn get_local_data(client_config: ClientConfig) -> Result<SymbolData> {
     //need to see if this form is the same as the api request... TODO
 }
 
-fn make_data_request(client_config: ClientConfig) -> Result<Vec<u8>> {
+fn make_data_request(client_config: ClientConfig) -> Result<SymbolData> {
     let local = "local";
     let api = "api";
     if client_config.source == api {
         //call function for api data grab
-        let api_symbol_data = make_api_call(client_config)
+        let api_symbol_data = make_api_call(client_config);
     };
     } else if client_config.source == local {
         //call function for local data grab
+        let local_symbol_data = get_local_data(client_config);
         //
     } else {
         //error
@@ -204,29 +209,38 @@ fn get_stock_symbol_data(request_data: Vec<u8>) -> Result<serde_json::Value> {
  * (2) gather stock_data (is this useful?!!?!) Not sure on this one. maybe just use the
  * generate_stock_metrics function?
  */
-
-fn generate_volume_from_timeseries(symbols_data: serde_json::Value, client_config: &ClientConfig) -> Result<Vec<f64>> {
-    let mut volumes= Vec::new();
-    if let Some(time_series) = symbols_data["Time Series (Daily)"].as_object() {
-        for (_date, values) in time_series.into_iter().take(client_config.time_period.try_into()?) {
-            let volume = values["6. volume"]
-                .as_str()
-                .ok_or_else(|| anyhow!("unable to get volume from timeseries"))?
-                .parse::<f64>()
-                .map_err(|_| anyhow!("unable to parse volume as f64"))?;
-            volumes.push(volume);
+//this makes one huge symbol data with its volumes.push() logic
+//need to change to map of vectors symbol: volumes
+//THIS FUNCTION NEED CLOSE INSPECTION TODO
+fn generate_volume_from_timeseries(symbol_data: SymbolData) -> Result<Map<Vec<f64>>> {
+    let mut symbols_volumes = Map(String, Vec<f64>);
+    for symbol in symbol_data.data {
+        let mut volumes = Vec::new();
+        if let Some(time_series) = symbols_data.data["Time Series (Daily)"].as_object() {
+            //need to make it nested, quadractic I suppose
+            for (_date, values) in time_series.into_iter().take(symbols_data.time_period.try_into()?) {
+                let volume = values["6. volume"]
+                    .as_str()
+                    .ok_or_else(|| anyhow!("unable to get volume from timeseries"))?
+                    .parse::<f64>()
+                    .map_err(|_| anyhow!("unable to parse volume as f64"))?;
+                volumes.push(volume);
+            }
+        } else {
+            //printing it to see what happened
+            println!("time_series: {}", symbols_data.data);
+            return Err(anyhow!("Time Series (Daily) data not found in symbols_data"));
         }
-    } else {
-        println!("time_series: {}", symbols_data);
-        return Err(anyhow!("Time Series (Daily) data not found in symbols_data"));
+        //check TODO
+        symbols_volumes.push(symbol, volumes);
     }
-    Ok(volumes)
+    Ok(symbols_volumes)
 }
 
-fn generate_closings_from_timeseries(symbols_data: serde_json::Value, client_config: ClientConfig) -> Result<Vec<f64>> {
+fn generate_closings_from_timeseries(symbol_data SymbolData) -> Result<Vec<f64>> {
     let mut closings = Vec::new();
-    if let Some(time_series) = symbols_data["Time Series (Daily)"].as_object() {
-        for (_date, values) in time_series.into_iter().take(client_config.time_period.try_into()?) {    
+    if let Some(time_series) = symbols_data.data["Time Series (Daily)"].as_object() {
+        for (_date, values) in time_series.into_iter().take(symbols_data.time_period.try_into()?) {    
             let closing = values["4. close"]
                 .as_str()
                 .ok_or_else(|| anyhow!("unable to get closing price from timeseries"))?
@@ -304,17 +318,17 @@ fn compile_stock_data(
     time_period: i16,
 ) -> Result<Vec<StockData>> {
     let mut compiled_data = Vec::new();
-    for symbol in client_requested_symbols {
-        let config = grab_client_config()?;
-        let request_data = make_api_request(&config, symbol.clone())?;
-        let test_request_data = response_for_load_testing()?;
-        let stock_symbol_data = get_stock_symbol_data(test_request_data)?;
-        let volumes = generate_volume_from_timeseries(stock_symbol_data.clone(), &config)?;
-        let closings = generate_closings_from_timeseries(stock_symbol_data.clone(), config)?;
-        let (basic_metrics, daily_states) = generate_basic_metrics(closings, volumes)?;
-        let stock = apply_stock_metrics(basic_metrics, daily_states, symbol, time_period)?;
-        compiled_data.push(stock);
-    }
+    //for symbol in client_requested_symbols {
+        //TODO change this for new data model
+    let config = grab_client_config()?;
+    let symbol_data = make_api_request(config);
+    //let test_request_data = response_for_load_testing()?;h /
+    let volumes = generate_volume_from_timeseries(symbol_data)?;
+    let closings = generate_closings_from_timeseries(symbol_data)?;
+    let (basic_metrics, daily_states) = generate_basic_metrics(closings, volumes)?;
+    let stock = apply_stock_metrics(basic_metrics, daily_states, symbol, time_period)?;
+    compiled_data.push(stock);
+    //}
     Ok(compiled_data)
 }
 
