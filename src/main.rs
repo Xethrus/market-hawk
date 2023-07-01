@@ -7,6 +7,7 @@ use serde_json::json;
 
 use statrs::statistics::Statistics;
 use std::str;
+use std::collections::HashMap;
 
 use config::ConfigError;
 use config::{Config, File, FileFormat};
@@ -35,10 +36,12 @@ struct BasicMetrics {
 
 //dont know what is needed here
 //figure out how this works
+#[derive(PartialEq<_>,Debug, Deserialize)]
 enum Source {
     api, 
     local,
 }
+
 struct SymbolData {
     data: serde_json::Value,
     //maybe could denote which symbols were grabbable, this would be good for the api limit
@@ -50,6 +53,8 @@ struct SymbolData {
 
 #[derive(Debug, Deserialize)]
 struct ClientConfig {
+    source: Source,
+    file_path: String,
     api_key: String,
     symbols: Vec<String>,
     time_period: i16,
@@ -79,26 +84,26 @@ fn grab_client_config() -> Result<ClientConfig, ConfigError> {
     let configuration = Config::builder()
         .add_source(File::new("config.toml", FileFormat::Toml))
         .build()?;
-    let source = configuration.get::<String>("configuration.source");
-    let api = "api";
-    let local = "local";
+    let source = configuration.get::<Source>("configuration.source");
+    let api = Source::api;
+    let local = Source::local;
     let NA = "N/A";
     if source == api {
         let client_config: ClientConfig = ClientConfig {
             source: source,
-            file_path: NA,
+            file_path: NA.to_string(),
             api_key: configuration.get::<String>("configuration.api_key")?,
             symbols: configuration.get::<Vec<String>>("configuration.symbols")?,
             time_period: configuration.get::<i16>("configuration.time_period")?,
-        }?;
+        };
     } else if source == local {
         let client_config: ClientConfig = ClientConfig {
             source: source,
             file_path: configuration.get::<String>("configuration.file_path")?,
-            api_key: NA,
+            api_key: NA.to_string(),
             symbols: configuration.get::<Vec<String>>("configuration.symbols")?,
             time_period: configuration.get::<i16>("configuration.time_period")?,
-        }?;
+        };
     }
     Ok(client_config)
 }
@@ -106,11 +111,11 @@ fn grab_client_config() -> Result<ClientConfig, ConfigError> {
 fn make_api_call(client_config: ClientConfig) -> Result<SymbolData> {
     //need to make sure that this data doesnt keep calling if it reaches limit TODO
     let mut symbol_data = SymbolData;
-    //check syntax TODO
-    let symbol_data.source = Source::api;
-    let symbol_data.time_period = client_config.time_period;
+    symbol_data.source = Source::api;
+    symbol_data.time_period = client_config.time_period;
     for symbol in client_config.symbols {
         //how can I control time period though? I think this gives me max
+        //This is non factor for optimization
         let mut easy = Easy::new();
         let mut response_data = Vec::new();
         let url = format!(
@@ -126,29 +131,29 @@ fn make_api_call(client_config: ClientConfig) -> Result<SymbolData> {
             })?;
             transfer.perform()?;
         }
+        //wtf am i doing here
         match response_data = get_stock_symbol_data(request_data) {
-            Ok() => {
+            Ok(response_data) => {
+                symbols_data.data.extend(response_data);
+                symbols_data.symbols.extend(symbol);
                 continue
             }, 
-            Err => {
+            Err(..) => {
+                println!("breaking loop max amount of symbol data sourced");
                 break
             }
         }
-        //check syntax TODO
-        symbols_data.data.extend(response_data);
-        //gives me what symbols were extracted TODO
-        symbols_data.symbols.extend(symbol);
     }
     Ok(symbols_data)
 }
 fn get_local_data(client_config: ClientConfig) -> Result<SymbolData> {
     let mut symbol_data = SymbolData;
-    let symbol_data.time_period = client_config.time_period;
-    let symbol_data.source = Source::local;
+    symbol_data.time_period = client_config.time_period;
+    symbol_data.source = Source::local;
     let mut local_file = File::open(client_config.file_path)?;
     let json_data: Value = serde_json::from_read(file)?;
-    let symbol_data.data = json_data;
-    let symbols_data.symbols = client_config.symbols;
+    symbol_data.data = json_data;
+    symbols_data.symbols = client_config.symbols;
     Ok(symbols_data)
     //need to see if this form is the same as the api request... TODO
 }
@@ -159,11 +164,11 @@ fn make_data_request(client_config: ClientConfig) -> Result<SymbolData> {
     if client_config.source == api {
         //call function for api data grab
         let api_symbol_data = make_api_call(client_config);
-    };
+        api_symbol_data
     } else if client_config.source == local {
         //call function for local data grab
         let local_symbol_data = get_local_data(client_config);
-        //
+        local_symbol_data
     } else {
         //error
         Err(anyhow::anyhow!("Inaccurate client config data source data"))
@@ -211,11 +216,11 @@ fn get_stock_symbol_data(request_data: Vec<u8>) -> Result<serde_json::Value> {
  */
 //this makes one huge symbol data with its volumes.push() logic
 //need to change to map of vectors symbol: volumes
-//THIS FUNCTION NEED CLOSE INSPECTION TODO
-fn generate_volume_from_timeseries(symbol_data: SymbolData) -> Result<Map<Vec<f64>>> {
-    let mut symbols_volumes = Map(String, Vec<f64>);
+//CUrrent TODO
+fn generate_volume_from_timeseries(symbol_data: SymbolData) -> Result<HashMap<String, Vec<f64>>> {
+    let mut symbols_volumes = HashMap::new();
     for symbol in symbol_data.data {
-        let mut volumes = Vec::new();
+        let mut volumes = Vec::new>();
         if let Some(time_series) = symbols_data.data["Time Series (Daily)"].as_object() {
             //need to make it nested, quadractic I suppose
             for (_date, values) in time_series.into_iter().take(symbols_data.time_period.try_into()?) {
@@ -226,18 +231,17 @@ fn generate_volume_from_timeseries(symbol_data: SymbolData) -> Result<Map<Vec<f6
                     .map_err(|_| anyhow!("unable to parse volume as f64"))?;
                 volumes.push(volume);
             }
+            //string : vec<f64>
+            symbols_volumes.insert(symbol, volumes)
         } else {
-            //printing it to see what happened
             println!("time_series: {}", symbols_data.data);
             return Err(anyhow!("Time Series (Daily) data not found in symbols_data"));
         }
-        //check TODO
-        symbols_volumes.push(symbol, volumes);
     }
     Ok(symbols_volumes)
 }
 
-fn generate_closings_from_timeseries(symbol_data SymbolData) -> Result<Vec<f64>> {
+fn generate_closings_from_timeseries(symbol_data: SymbolData) -> Result<Vec<f64>> {
     let mut closings = Vec::new();
     if let Some(time_series) = symbols_data.data["Time Series (Daily)"].as_object() {
         for (_date, values) in time_series.into_iter().take(symbols_data.time_period.try_into()?) {    
@@ -254,46 +258,53 @@ fn generate_closings_from_timeseries(symbol_data SymbolData) -> Result<Vec<f64>>
     Ok(closings)
 }
 
+//NEED to redsign this function TODO
 fn generate_basic_metrics(
     closings: Vec<f64>,
-    volumes: Vec<f64>,
-) -> Result<(BasicMetrics, Vec<DailyStockData>)> {
-
-    //CLOSINGS ARE PASSED MESSED UP
-    let mut returns: Vec<f64> = Vec::new();
-    let mut total_quantity: f64 = 0.0;
-    let mut total_quantity_volume: f64 = 0.0;
-
-    let mut daily_states: Vec<DailyStockData> = Vec::new();
-
-    for i in 0..closings.len() - 1 {
-        let change_in_value = closings[i + 1] - closings[i];
-        let daily_return = change_in_value / closings[i];
-        let daily_stock_data = DailyStockData {
-            closing_price: closings[i],
-            volume: volumes[i],
-            change_in_value: change_in_value,
-        };
-        daily_states.push(daily_stock_data);
-        total_quantity_volume += volumes[i];
-        //CLOSINGS VECTOR IS MESSED UP
-        total_quantity += closings[i];
-        returns.push(daily_return);
+    symbol_volume_set: HashMap<String, Vec<f64>>,
+) -> Result<(Vec<BasicMetrics>, Vec<Vec<DailyStockData>>)> {
+    //TODO INSPECTR RETURN HERE
+    if(symbol_closings_set.len() !== symbol_volume_set.len()) {
+        panic!
+        //do something if they arent the same warning or something
     }
-    let mean_return = returns.clone().mean();
-    let variance = returns.variance();
-    let standard_deviation = variance.sqrt();
-    let mean_value = total_quantity / closings.len() as f64;
-    let mean_volume = total_quantity_volume / volumes.len() as f64;
-    let time_period = closings.len() as i16;
+    let symbol_quantity = symbol_volume_set.len()
+    let basic_metric_vector = Vec::new();
+    for index in 0..symbol_quantity {
+        let mut returns: Vec<f64> = Vec::new();
+        let mut total_quantity: f64 = 0.0;
+        let mut total_quantity_volume: f64 = 0.0;
 
-    Ok((BasicMetrics {
-        mean_return: mean_return,
-        mean_value: mean_value,
-        mean_volume: mean_volume,
-        variance: variance,
-        standard_deviation: standard_deviation,
-    }, daily_states))
+        let mut daily_states: Vec<DailyStockData> = Vec::new();
+
+        for i in 0..closings.len() - 1 {
+            let change_in_value = closings[i + 1] - closings[i];
+            let daily_return = change_in_value / closings[i];
+            let daily_stock_data = DailyStockData {
+                closing_price: closings[i],
+                volume: volumes[i],
+                change_in_value: change_in_value,
+            };
+            daily_states.push(daily_stock_data);
+            total_quantity_volume += volumes[i];
+            //CLOSINGS VECTOR IS MESSED UP
+            total_quantity += closings[i];
+            returns.push(daily_return);
+        }
+        let mean_return = returns.clone().mean();
+        let variance = returns.variance();
+        let standard_deviation = variance.sqrt();
+        let mean_value = total_quantity / closings.len() as f64;
+        let mean_volume = total_quantity_volume / volumes.len() as f64;
+        let time_period = closings.len() as i16;
+
+        Ok((BasicMetrics {
+            mean_return: mean_return,
+            mean_value: mean_value,
+            mean_volume: mean_volume,
+            variance: variance,
+            standard_deviation: standard_deviation,
+        }, daily_states))
 }
 
 fn apply_stock_metrics(
@@ -321,13 +332,13 @@ fn compile_stock_data(
     //for symbol in client_requested_symbols {
         //TODO change this for new data model
     let config = grab_client_config()?;
-    let symbol_data = make_api_request(config);
+    let symbol_data = make_data_request(config)?;
     //let test_request_data = response_for_load_testing()?;h /
     let volumes = generate_volume_from_timeseries(symbol_data)?;
     let closings = generate_closings_from_timeseries(symbol_data)?;
     let (basic_metrics, daily_states) = generate_basic_metrics(closings, volumes)?;
-    let stock = apply_stock_metrics(basic_metrics, daily_states, symbol, time_period)?;
-    compiled_data.push(stock);
+    //let stock = apply_stock_metrics(basic_metrics, daily_states, symbol, time_period)?;
+    //compiled_data.push(stock);
     //}
     Ok(compiled_data)
 }

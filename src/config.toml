@@ -1,5 +1,5 @@
 [configuration]
-source = "local" ## LOCAL OR API
+source = "local" ## LOCAL OR API ENUM
 file_path = "testing_load" ## FILE PATH FOR LOCAL ACCESS
 api_key = "81I9AVPLTTFBVASS" ## KEY FOR API ACCESS
 symbols = ["IBM", "GOOGL"] ## STOCK SYMBOLS OF INTEREST
