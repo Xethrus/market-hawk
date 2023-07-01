@@ -103,8 +103,10 @@ fn grab_client_config() -> Result<ClientConfig, ConfigError> {
 }
 
 fn make_api_call(client_config: ClientConfig) -> Result<SymbolData> {
-    //need to make sure that this data doesnt keep calling if it reaches limit
+    //need to make sure that this data doesnt keep calling if it reaches limit TODO
     let mut symbol_data = SymbolData;
+    //check syntax TODO
+    let symbol_data.source = Source::api;
     for symbol in client_config.symbols {
         let mut easy = Easy::new();
         let mut response_data = Vec::new();
@@ -121,10 +123,30 @@ fn make_api_call(client_config: ClientConfig) -> Result<SymbolData> {
             })?;
             transfer.perform()?;
         }
-        let response_data = get_stock_symbol_data(request_data)?;
-        symbols_data.extend(response_data);
+        match response_data = get_stock_symbol_data(request_data) {
+            Ok() => {
+                continue
+            }, 
+            Err => {
+                break
+            }
+        }
+        //check syntax TODO
+        symbols_data.data.extend(response_data);
+        //gives me what symbols were extracted TODO
+        symbols_data.symbols.extend(symbol);
     }
     Ok(symbols_data)
+}
+fn get_local_data(client_config: ClientConfig) -> Result<SymbolData> {
+    let mut symbol_data = SymbolData;
+    let symbol_data.source = Source::local;
+    let mut local_file = File::open(client_config.file_path)?;
+    let json_data: Value = serde_json::from_read(file)?;
+    let symbol_data.data = json_data;
+    let symbols_data.symbols = client_config.symbols;
+    Ok(symbols_data)
+    //need to see if this form is the same as the api request... TODO
 }
 
 fn make_data_request(client_config: ClientConfig) -> Result<Vec<u8>> {
@@ -132,9 +154,11 @@ fn make_data_request(client_config: ClientConfig) -> Result<Vec<u8>> {
     let api = "api";
     if client_config.source == api {
         //call function for api data grab
+        let api_symbol_data = make_api_call(client_config)
     };
     } else if client_config.source == local {
         //call function for local data grab
+        //
     } else {
         //error
         Err(anyhow::anyhow!("Inaccurate client config data source data"))
