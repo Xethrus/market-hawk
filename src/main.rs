@@ -52,6 +52,11 @@ struct ClientConfig {
 //THE LOCAL DATA DOES THE SAME, BASICALLY NEED TO FIGURE A BUNCH OF GENERAL SHIT ABOUT THAT
 //STRUCTURING AND DATA MODEL: SINCE API MAKES A CALL AND GET SOME DATA, BUT IN THEORY THE LOCAL
 //DATA IS GRABBED ALL AT ONCE THEN  "PARSED" FOR WANTED SYMBOLS hmmmmmmmmmmm
+//
+//CHANGE API SO IT RUNS MULTIPLE CYCLES SO IT HAS DATA LIKE LOCAL, MAXIMIZE EFFICIENCY
+//
+//
+//TWO FUNCTIONS RETURN NORMALIZED DATA, DOING TOO MUCH
 
 
 fn grab_client_config() -> Result<ClientConfig, ConfigError> {
@@ -59,14 +64,27 @@ fn grab_client_config() -> Result<ClientConfig, ConfigError> {
     let configuration = Config::builder()
         .add_source(File::new("config.toml", FileFormat::Toml))
         .build()?;
-    let client_config: ClientConfig = ClientConfig {
-//TODO PUT IF SO THAT SOME NOT NEEDED IF LOCAL LIKE API KEY
-        source: configuration.get::<String>("configuration.source")?, 
-        file_path: configuration.get::<String>("configuration.file_path")?,
-        api_key: configuration.get::<String>("configuration.api_key")?,
-        symbols: configuration.get::<Vec<String>>("configuration.symbols")?,
-        time_period: configuration.get::<i16>("configuration.time_period")?,
-    };
+    let source = configuration.get::<String>("configuration.source");
+    let api = "api";
+    let local = "local";
+    let NA = "N/A";
+    if source == api {
+        let client_config: ClientConfig = ClientConfig {
+            source: source,
+            file_path: NA,
+            api_key: configuration.get::<String>("configuration.api_key")?,
+            symbols: configuration.get::<Vec<String>>("configuration.symbols")?,
+            time_period: configuration.get::<i16>("configuration.time_period")?,
+        }?;
+    } else if source == local {
+        let client_config: ClientConfig = ClientConfig {
+            source: source,
+            file_path: configuration.get::<String>("configuration.file_path")?,
+            api_key: NA,
+            symbols: configuration.get::<Vec<String>>("configuration.symbols")?,
+            time_period: configuration.get::<i16>("configuration.time_period")?,
+        }?;
+    }
     Ok(client_config)
 }
 
@@ -76,11 +94,14 @@ trait DataSource {
 
 struct ApiDataSource {
     api_key: String,
+    symbols: Vec<String>,
 }
 
 impl DataSource for ApiDataSource {
     fn fetch_data(&self) -> Result<Vec<u8>> {
+        //single request single response actioning
         let mut easy = Easy::new();
+        for 
         let mut response_data = Vec::new();
         let url = format!(
             "https://www.alphavantage.co/query?function=TIME_SERIES_DAILY_ADJUSTED&symbol={}&apikey={}",
@@ -101,9 +122,11 @@ impl DataSource for ApiDataSource {
 
 struct LocalDataSource {
     file_path: String,
+    symbols: Vec<String>,
 }
 
 impl DataSource for LocalDataSource {
+    //grabs all local data
     fn fetch_data(&self) -> Result<Vec<u8>> {
         let load_test_content = std::fs::read(self.file_path)?;
         Ok(load_test_content)
@@ -114,12 +137,14 @@ fn make_data_request(client_config: ClientConfig) -> Result<Vec<u8>> {
     let api = "api";
     if client_config.source == api {
         let api_data_source = ApiDataSource {
-            api_key: client_config.api_key
+            api_key: client_config.api_key,
+            symbols: client_config.symbols,
         };
         api_data_source.fetch_data()
     } else if client_config.source == local {
         let local_data_source = LocalDataSource {
-            file_path: client_config.file_path
+            file_path: client_config.file_path,
+            symbols: client_config.file_path,
         };
         local_data_source.fetch_data()
     } else {
@@ -128,10 +153,10 @@ fn make_data_request(client_config: ClientConfig) -> Result<Vec<u8>> {
 }
 
 
-//fn normalize_data(source: &dyn DataSource) -> Result<serde_json::Value> {
-//    let data = source.fetch_data()?;
-//    let symbol_data = get_stock_symbol_data(data);
-//}
+fn normalize_data(R) -> Result<serde_json::Value> {
+    let data = source.fetch_data()?;
+    let symbol_data = get_stock_symbol_data(data);
+}
 
 //
 
